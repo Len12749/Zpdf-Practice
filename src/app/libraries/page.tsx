@@ -1,18 +1,104 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LibraryCard } from "@/components/libraries/library-card";
-import { mockLibraries, mockUser } from "@/lib/mock-data";
-import { FolderOpen, Plus, FileCsv } from "@phosphor-icons/react/dist/ssr";
+import { useAuth } from "@/lib/auth-store";
+import { api } from "@/lib/client-api";
+import { useFeedback } from "@/components/ui/feedback";
+import { FolderOpen, Plus, FileCsv } from "@phosphor-icons/react";
+import type { LibraryStatus } from "@/lib/mock-data";
+
+type Lib = {
+  id: string;
+  name: string;
+  source: "upload" | "csv";
+  status: "ready" | "importing" | "failed";
+  questionCount: number;
+  createdAt: string;
+  updatedAt: string;
+  importProgress: {
+    completed: number;
+    total: number;
+    pageCount: number;
+    phaseLabel: string;
+    accelerated?: boolean;
+    error?: string | null;
+  } | null;
+};
 
 export default function LibrariesPage() {
-  const libs = mockLibraries;
-  const hasLibs = libs.length > 0;
+  const { isLoggedIn, loading: authLoading } = useAuth();
+  const { toast, confirm } = useFeedback();
+  const router = useRouter();
+  const [libs, setLibs] = useState<Lib[]>([]);
+  const [limit, setLimit] = useState(10);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    const data = await api<{ libraries: Lib[]; limit: number }>(
+      "/api/libraries",
+    );
+    setLibs(data.libraries);
+    setLimit(data.limit);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (!authLoading && !isLoggedIn) router.replace("/login");
+  }, [authLoading, isLoggedIn, router]);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    void load();
+    const t = setInterval(() => {
+      void load().catch(() => undefined);
+    }, 3000);
+    return () => clearInterval(t);
+  }, [isLoggedIn, load]);
+
+  if (authLoading || loading) {
+    return (
+      <div className="mx-auto max-w-[1400px] px-4 py-16 text-sm text-muted">
+        加载题库…
+      </div>
+    );
+  }
+
+  const used = libs.length;
   const importingCount = libs.filter((l) => l.status === "importing").length;
-  // 导入中的题库也占用名额
-  const usedSlots = mockUser.libraryCount + importingCount > mockUser.libraryLimit
-    ? mockUser.libraryLimit
-    : Math.max(mockUser.libraryCount, libs.length);
+  const failedCount = libs.filter((l) => l.status === "failed").length;
+
+  const handleDelete = async (id: string) => {
+    const target = libs.find((l) => l.id === id);
+    const ok = await confirm({
+      title:
+        target?.status === "importing"
+          ? "取消并删除导入任务？"
+          : target?.status === "failed"
+            ? "删除失败任务？"
+            : "删除题库？",
+      description:
+        target?.status === "importing"
+          ? "已发起的 API 请求会尽快停止，不再继续耗额度。临时文件也会清理。"
+          : target?.status === "failed"
+            ? "删除后可重新上传导入。"
+            : "将同时清除错题本与收藏夹中对应题目，此操作不可恢复。",
+      confirmLabel: target?.status === "importing" ? "取消并删除" : "删除",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api(`/api/libraries/${id}`, { method: "DELETE" });
+      await load();
+      toast("已删除", "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "删除失败", "error");
+    }
+  };
 
   return (
     <div className="mx-auto max-w-[1400px] px-4 py-10 md:px-6 md:py-12">
@@ -20,11 +106,17 @@ export default function LibrariesPage() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">题库管理</h1>
           <p className="mt-2 text-sm text-muted">
-            已用 {usedSlots} / {mockUser.libraryLimit} 个题库名额
+            已用 {used} / {limit} 个题库名额
             {importingCount > 0 && (
               <span className="text-warning">
                 {" "}
                 · {importingCount} 个正在导入
+              </span>
+            )}
+            {failedCount > 0 && (
+              <span className="text-danger">
+                {" "}
+                · {failedCount} 个导入失败
               </span>
             )}
           </p>
@@ -44,21 +136,19 @@ export default function LibrariesPage() {
       <div className="mt-6 rounded-[var(--radius)] border border-border bg-surface p-4">
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted">题库容量</span>
-          <span className="font-mono text-foreground">
-            {usedSlots}/{mockUser.libraryLimit}
+          <span className="font-mono">
+            {used}/{limit}
           </span>
         </div>
         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-muted">
           <div
             className="h-full rounded-full bg-accent transition-all"
-            style={{
-              width: `${(usedSlots / mockUser.libraryLimit) * 100}%`,
-            }}
+            style={{ width: `${Math.min(100, (used / limit) * 100)}%` }}
           />
         </div>
       </div>
 
-      {!hasLibs ? (
+      {!libs.length ? (
         <div className="mt-8">
           <EmptyState
             icon={<FolderOpen size={28} />}
@@ -72,11 +162,36 @@ export default function LibrariesPage() {
         <ul className="mt-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {libs.map((lib) => (
             <li key={lib.id}>
-              <LibraryCard library={lib} />
+              <LibraryCard
+                onDelete={(id) => void handleDelete(id)}
+                library={{
+                  id: lib.id,
+                  name: lib.name,
+                  questionCount: lib.questionCount,
+                  createdAt: String(lib.createdAt).slice(0, 10),
+                  updatedAt: String(lib.updatedAt).slice(0, 10),
+                  source: lib.source,
+                  status: lib.status as LibraryStatus,
+                  importProgress:
+                    lib.status === "importing" || lib.status === "failed"
+                      ? {
+                          completed: lib.importProgress?.completed ?? 0,
+                          total: lib.importProgress?.total ?? 1,
+                          pageCount: lib.importProgress?.pageCount ?? 0,
+                          phaseLabel:
+                            lib.status === "failed"
+                              ? lib.importProgress?.error ||
+                                lib.importProgress?.phaseLabel ||
+                                "导入失败"
+                              : lib.importProgress?.phaseLabel || "处理中…",
+                          accelerated: lib.importProgress?.accelerated,
+                        }
+                      : undefined,
+                }}
+              />
             </li>
           ))}
-
-          {usedSlots < mockUser.libraryLimit && (
+          {used < limit && (
             <li>
               <Link
                 href="/libraries/new"

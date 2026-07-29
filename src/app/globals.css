@@ -84,17 +84,60 @@ body {
   outline-offset: 2px;
 }
 
-/* Scrollbar */
+/*
+ * 自定义滚动条（非浏览器默认外观）
+ * - Firefox: scrollbar-width / scrollbar-color
+ * - Chromium / Safari: webkit 伪元素 + 轨道内边距圆角滑块
+ */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent) var(--surface-muted);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--accent) 55%, var(--muted))
+    var(--surface-muted);
+}
+
 @media (pointer: fine) {
-  ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+  *::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
   }
-  ::-webkit-scrollbar-thumb {
-    background: color-mix(in oklab, var(--muted) 40%, transparent);
+
+  *::-webkit-scrollbar-track {
+    margin: 4px;
+    background: var(--surface-muted);
     border-radius: 999px;
-    border: 2px solid transparent;
-    background-clip: content-box;
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+
+  *::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    border: 3px solid var(--surface-muted);
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--accent) 75%, white),
+      var(--accent)
+    );
+    box-shadow: 0 1px 2px rgb(15 23 42 / 0.12);
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(
+      180deg,
+      var(--accent-hover),
+      var(--accent)
+    );
+  }
+
+  *::-webkit-scrollbar-thumb:active {
+    background: var(--accent);
+  }
+
+  *::-webkit-scrollbar-corner {
+    background: transparent;
   }
 }
 
@@ -137,4 +180,9 @@ body {
   margin: 0.5em 0;
   overflow-x: auto;
   overflow-y: hidden;
+}
+
+/* Markdown 表格在暗色下可读 */
+.rich-text table {
+  font-variant-numeric: tabular-nums;
 }

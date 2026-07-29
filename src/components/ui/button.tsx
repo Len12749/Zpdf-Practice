@@ -4,15 +4,20 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 type Variant = "primary" | "secondary" | "ghost" | "danger" | "outline";
 type Size = "sm" | "md" | "lg";
 
+/**
+ * 全部实体按钮，禁止半透明/纯透明底。
+ */
 const variants: Record<Variant, string> = {
   primary:
     "bg-accent text-white hover:bg-accent-hover dark:text-zinc-950 shadow-sm",
   secondary:
-    "bg-surface-muted text-foreground hover:bg-border/80 border border-border",
-  ghost: "bg-transparent text-foreground hover:bg-surface-muted",
-  danger: "bg-danger text-white hover:opacity-90",
+    "bg-surface-muted text-foreground border border-border hover:bg-border shadow-sm",
+  // 与 secondary 同级可见度，仅 hover 略浅
+  ghost:
+    "bg-surface-muted text-foreground border border-border hover:bg-border shadow-sm",
+  danger: "bg-danger text-white hover:opacity-90 shadow-sm",
   outline:
-    "bg-transparent border border-border text-foreground hover:bg-surface-muted",
+    "bg-surface-muted text-foreground border-2 border-border hover:border-accent/50 hover:bg-surface shadow-sm",
 };
 
 const sizes: Record<Size, string> = {

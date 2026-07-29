@@ -79,7 +79,7 @@ export default function AboutPage() {
               注册时填写的联系邮箱用于我们与您取得联系。如需商务合作或项目开发，欢迎通过产品内预留邮箱与我们沟通。
             </p>
             <Link href="/register" className="mt-4 inline-block">
-              <Button>注册体验 Zpdf_practice</Button>
+              <Button>注册体验 Zpdf-Practice</Button>
             </Link>
           </div>
         </div>

@@ -13,7 +13,7 @@ export type Question = {
   wrongCount?: number;
 };
 
-export type LibraryStatus = "ready" | "importing";
+export type LibraryStatus = "ready" | "importing" | "failed";
 
 /** 与新建/导入任务开始时相同的进度结构：N 页提取 + (N-1) 次跨页拼接 */
 export type ImportProgress = {

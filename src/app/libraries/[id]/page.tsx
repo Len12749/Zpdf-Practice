@@ -1,27 +1,92 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { QuestionCard } from "@/components/question/question-card";
 import { ImportProgressPanel } from "@/components/import/import-progress";
-import { mockLibraries, mockQuestions } from "@/lib/mock-data";
+import { api } from "@/lib/client-api";
+import { useAuth } from "@/lib/auth-store";
+import { useFeedback } from "@/components/ui/feedback";
 import {
   ArrowLeft,
   ListChecks,
   BookOpenText,
-  Plus,
   Trash,
   LockSimple,
-} from "@phosphor-icons/react/dist/ssr";
+} from "@phosphor-icons/react";
+import { cn } from "@/lib/cn";
 
-export default async function LibraryDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
-  const lib = mockLibraries.find((l) => l.id === id) ?? mockLibraries[0];
+type Q = {
+  id: string;
+  stem: string;
+  options: { key: string; text: string }[];
+  answer: string[];
+  explanation: string;
+  type: "single" | "multiple";
+  aiGeneratedAnswer: boolean;
+  aiGeneratedExplanation: boolean;
+};
 
-  // 正在导入：不允许操作，仅展示与任务开始时相同的进度
-  if (lib.status === "importing") {
+export default function LibraryDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const { isLoggedIn, loading: authLoading } = useAuth();
+  const { toast, confirm } = useFeedback();
+  const router = useRouter();
+  const [lib, setLib] = useState<{
+    id: string;
+    name: string;
+    status: string;
+    questionCount: number;
+    createdAt: string;
+    importProgress: {
+      completed: number;
+      total: number;
+      pageCount: number;
+      phaseLabel: string;
+      accelerated?: boolean;
+      error?: string | null;
+    };
+  } | null>(null);
+  const [qs, setQs] = useState<Q[]>([]);
+  const [locked, setLocked] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    const data = await api<{
+      library: typeof lib;
+      questions: Q[];
+      locked: boolean;
+    }>(`/api/libraries/${id}`);
+    setLib(data.library);
+    setQs(data.questions);
+    setLocked(data.locked);
+  }, [id]);
+
+  useEffect(() => {
+    if (!authLoading && !isLoggedIn) router.replace("/login");
+  }, [authLoading, isLoggedIn, router]);
+
+  useEffect(() => {
+    if (!isLoggedIn || !id) return;
+    void load().catch((e: Error) => setError(e.message));
+    const t = setInterval(() => {
+      void load().catch(() => undefined);
+    }, 3000);
+    return () => clearInterval(t);
+  }, [isLoggedIn, id, load]);
+
+  if (!lib) {
+    return (
+      <div className="mx-auto max-w-[900px] px-4 py-16 text-sm text-muted">
+        {error || "加载中…"}
+      </div>
+    );
+  }
+
+  if (locked || lib.status === "importing" || lib.status === "failed") {
+    const failed = lib.status === "failed";
     return (
       <div className="mx-auto max-w-lg px-4 py-10 md:px-6">
         <Link
@@ -31,33 +96,62 @@ export default async function LibraryDetailPage({
           <ArrowLeft size={16} />
           返回题库
         </Link>
-
-        <div className="mt-6 rounded-[var(--radius)] border border-border bg-surface p-6 shadow-[var(--shadow)]">
-          <div className="flex items-center gap-2 text-warning">
+        <div className="mt-6 rounded-[var(--radius)] border border-border bg-surface p-6">
+          <div
+            className={cn(
+              "flex items-center gap-2",
+              failed ? "text-danger" : "text-warning",
+            )}
+          >
             <LockSimple size={20} weight="fill" />
-            <span className="text-sm font-semibold">正在导入 · 暂不可打开</span>
+            <span className="text-sm font-semibold">
+              {failed ? "导入失败" : "正在导入 · 暂不可打开"}
+            </span>
           </div>
-          <h1 className="mt-3 text-xl font-semibold tracking-tight">
-            {lib.name}
-          </h1>
-          <p className="mt-2 text-sm text-muted">
-            导入完成前无法查看或编辑题目，进度与任务开始时一致。
-          </p>
-
-          {lib.importProgress && (
-            <div className="mt-5">
-              <ImportProgressPanel
-                progress={lib.importProgress}
-                variant="panel"
-              />
-            </div>
-          )}
-
-          <Link href="/libraries" className="mt-5 block">
-            <Button variant="secondary" className="w-full">
-              返回列表
-            </Button>
-          </Link>
+          <h1 className="mt-3 text-xl font-semibold">{lib.name}</h1>
+          <div className="mt-5">
+            <ImportProgressPanel
+              progress={{
+                completed: lib.importProgress.completed,
+                total: Math.max(lib.importProgress.total, 1),
+                pageCount: lib.importProgress.pageCount,
+                phaseLabel: failed
+                  ? lib.importProgress.error ||
+                    lib.importProgress.phaseLabel ||
+                    "导入失败"
+                  : lib.importProgress.phaseLabel || "处理中…",
+                accelerated: lib.importProgress.accelerated,
+              }}
+              variant="panel"
+            />
+          </div>
+          <Button
+            className="mt-4 w-full"
+            variant="danger"
+            icon={<Trash size={16} />}
+            onClick={() => {
+              void (async () => {
+                const ok = await confirm({
+                  title: failed ? "删除失败任务？" : "取消并删除导入任务？",
+                  description: failed
+                    ? "删除后可重新上传导入。"
+                    : "将停止后续 API 调用，并清理临时文件。",
+                  confirmLabel: failed ? "删除" : "取消并删除",
+                  danger: true,
+                });
+                if (!ok) return;
+                try {
+                  await api(`/api/libraries/${id}`, { method: "DELETE" });
+                  toast("已删除", "success");
+                  router.push("/libraries");
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : "删除失败", "error");
+                }
+              })();
+            }}
+          >
+            {failed ? "删除失败任务" : "取消并删除"}
+          </Button>
         </div>
       </div>
     );
@@ -79,37 +173,74 @@ export default async function LibraryDetailPage({
             {lib.name}
           </h1>
           <p className="mt-2 text-sm text-muted">
-            {lib.questionCount} 道题 · 创建于 {lib.createdAt}
+            {lib.questionCount} 道题 · 创建于{" "}
+            {String(lib.createdAt).slice(0, 10)}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Link href="/practice">
+          <Link href={`/practice?libraryId=${lib.id}`}>
             <Button size="sm" icon={<ListChecks size={16} />}>
               刷题
             </Button>
           </Link>
-          <Link href="/memorize">
+          <Link href={`/memorize?libraryId=${lib.id}`}>
             <Button size="sm" variant="outline" icon={<BookOpenText size={16} />}>
               背题
             </Button>
           </Link>
-          <Button size="sm" variant="ghost" icon={<Plus size={16} />}>
-            加题
-          </Button>
-          <Button size="sm" variant="ghost" icon={<Trash size={16} />}>
+          <Button
+            size="sm"
+            variant="danger"
+            icon={<Trash size={16} />}
+            onClick={() => {
+              void (async () => {
+                const ok = await confirm({
+                  title: "删除题库？",
+                  description:
+                    "将同时清除错题本与收藏夹中对应题目，此操作不可恢复。",
+                  confirmLabel: "删除题库",
+                  danger: true,
+                });
+                if (!ok) return;
+                try {
+                  await api(`/api/libraries/${id}`, { method: "DELETE" });
+                  toast("题库已删除", "success");
+                  router.push("/libraries");
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : "删除失败", "error");
+                }
+              })();
+            }}
+          >
             删除题库
           </Button>
         </div>
       </div>
 
-      <p className="mt-3 text-xs text-muted">
-        删除题库将同时清除错题本与收藏夹中对应题目。
-      </p>
-
       <div className="mt-8 space-y-4">
-        {mockQuestions.map((q, i) => (
-          <QuestionCard key={q.id} question={q} index={i} mode="manage" />
+        {qs.map((q, i) => (
+          <QuestionCard
+            key={q.id}
+            question={{
+              id: q.id,
+              stem: q.stem,
+              options: q.options,
+              answer: q.answer,
+              explanation: q.explanation,
+              type: q.type,
+              aiGeneratedAnswer: Boolean(q.aiGeneratedAnswer),
+              aiGeneratedExplanation: Boolean(q.aiGeneratedExplanation),
+            }}
+            index={i}
+            mode="manage"
+            libraryId={lib.id}
+            onDeleted={() => void load()}
+            onUpdated={() => void load()}
+          />
         ))}
+        {!qs.length && (
+          <p className="text-sm text-muted">暂无题目，可重新导入或手动添加。</p>
+        )}
       </div>
     </div>
   );

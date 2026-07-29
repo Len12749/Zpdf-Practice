@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { BrandLogo } from "@/components/brand/logo";
@@ -10,6 +11,8 @@ import { useAuth } from "@/lib/auth-store";
 export default function LoginPage() {
   const { login } = useAuth();
   const router = useRouter();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   return (
     <div className="mx-auto flex min-h-[calc(100dvh-8rem)] max-w-md flex-col justify-center px-4 py-12">
@@ -18,7 +21,7 @@ export default function LoginPage() {
           <BrandLogo size={36} className="h-9 w-9" />
           <div>
             <h1 className="text-xl font-semibold tracking-tight">登录</h1>
-            <p className="text-xs text-muted">Zpdf_practice</p>
+            <p className="text-xs text-muted">Zpdf-Practice</p>
           </div>
         </div>
 
@@ -26,8 +29,13 @@ export default function LoginPage() {
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
-            login();
-            router.push("/libraries");
+            const fd = new FormData(e.currentTarget);
+            setBusy(true);
+            setError("");
+            void login(String(fd.get("account")), String(fd.get("password")))
+              .then(() => router.push("/libraries"))
+              .catch((err: Error) => setError(err.message))
+              .finally(() => setBusy(false));
           }}
         >
           <Input
@@ -45,8 +53,9 @@ export default function LoginPage() {
             placeholder="请输入密码"
             autoComplete="current-password"
           />
-          <Button type="submit" className="w-full" size="lg">
-            登录
+          {error && <p className="text-sm text-danger">{error}</p>}
+          <Button type="submit" className="w-full" size="lg" disabled={busy}>
+            {busy ? "登录中…" : "登录"}
           </Button>
         </form>
 

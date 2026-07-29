@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Zpdf_practice - 试卷智能提取与刷题",
+  title: "Zpdf-Practice - 试卷智能提取与刷题",
   description:
     "上传 PDF 或图片，AI 提取选择题，支持刷题、背题、错题本与收藏。北京智通明识科技有限公司。",
   icons: {

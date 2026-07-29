@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ImportProgressPanel } from "@/components/import/import-progress";
 import type { Library } from "@/lib/mock-data";
 import {
@@ -9,11 +10,21 @@ import {
   UploadSimple,
   CaretRight,
   LockSimple,
+  WarningCircle,
+  Trash,
 } from "@phosphor-icons/react";
 import { cn } from "@/lib/cn";
 
-export function LibraryCard({ library }: { library: Library }) {
+export function LibraryCard({
+  library,
+  onDelete,
+}: {
+  library: Library;
+  onDelete?: (id: string) => void;
+}) {
   const isImporting = library.status === "importing";
+  const isFailed = library.status === "failed";
+  const busy = isImporting || isFailed;
 
   const inner = (
     <>
@@ -21,15 +32,13 @@ export function LibraryCard({ library }: { library: Library }) {
         <div
           className={cn(
             "flex h-10 w-10 items-center justify-center rounded-xl",
-            isImporting
-              ? "bg-surface-muted text-muted"
-              : "bg-accent-soft text-accent",
+            busy ? "bg-surface-muted text-muted" : "bg-accent-soft text-accent",
           )}
         >
           {library.source === "csv" ? (
-            <FileCsv size={22} weight="duotone" />
+            <FileCsv size={22} weight="regular" />
           ) : (
-            <UploadSimple size={22} weight="duotone" />
+            <UploadSimple size={22} weight="regular" />
           )}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -37,6 +46,11 @@ export function LibraryCard({ library }: { library: Library }) {
             <Badge tone="warning" className="gap-1">
               <LockSimple size={11} weight="fill" />
               正在导入
+            </Badge>
+          ) : isFailed ? (
+            <Badge tone="danger" className="gap-1">
+              <WarningCircle size={11} weight="fill" />
+              导入失败
             </Badge>
           ) : (
             <Badge tone={library.source === "csv" ? "neutral" : "accent"}>
@@ -49,22 +63,39 @@ export function LibraryCard({ library }: { library: Library }) {
       <h2
         className={cn(
           "mt-4 text-lg font-semibold leading-snug tracking-tight",
-          !isImporting && "group-hover:text-accent",
-          isImporting && "text-foreground/80",
+          !busy && "group-hover:text-accent",
+          busy && "text-foreground/80",
         )}
       >
         {library.name}
       </h2>
 
-      {isImporting && library.importProgress ? (
+      {busy && library.importProgress ? (
         <div className="mt-4">
           <ImportProgressPanel
             progress={library.importProgress}
             variant="compact"
           />
           <p className="mt-2 text-[11px] text-muted">
-            导入完成前不可打开题库，请稍候
+            {isFailed
+              ? "任务失败，可删除后重新导入"
+              : "导入完成前不可打开，可取消删除任务"}
           </p>
+          {onDelete && (
+            <Button
+              size="sm"
+              variant="danger"
+              className="mt-3 w-full"
+              icon={<Trash size={14} />}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onDelete(library.id);
+              }}
+            >
+              {isImporting ? "取消并删除" : "删除失败任务"}
+            </Button>
+          )}
         </div>
       ) : (
         <>
@@ -83,16 +114,19 @@ export function LibraryCard({ library }: { library: Library }) {
     </>
   );
 
-  if (isImporting) {
+  if (busy) {
     return (
       <div
         role="status"
-        aria-disabled="true"
-        aria-busy="true"
-        aria-label={`${library.name} 正在导入，不可打开`}
+        aria-busy={isImporting}
+        aria-label={
+          isFailed
+            ? `${library.name} 导入失败`
+            : `${library.name} 正在导入`
+        }
         className={cn(
-          "relative flex h-full flex-col rounded-[var(--radius)] border border-amber-500/25 bg-surface p-5 shadow-[var(--shadow)]",
-          "cursor-not-allowed select-none",
+          "relative flex h-full flex-col rounded-[var(--radius)] border bg-surface p-5 shadow-[var(--shadow)]",
+          isFailed ? "border-danger/30" : "border-amber-500/25",
         )}
       >
         {inner}

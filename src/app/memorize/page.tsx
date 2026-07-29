@@ -1,13 +1,26 @@
+"use client";
+
+import { useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 import { SessionSetup } from "@/components/session/session-setup";
 
-export default function MemorizePage() {
+function Inner() {
+  const sp = useSearchParams();
   return (
     <SessionSetup
       title="背题"
-      description="直接显示答案与解析，适合快速过题。支持顺序、逆序、乱序与错题巩固。"
+      description="直接显示答案与解析，适合快速过题。"
       actionLabel="开始背题"
-      actionHref="/memorize/session"
-      showWrongMode
+      mode="memorize"
+      initialLibraryId={sp.get("libraryId") ?? undefined}
     />
+  );
+}
+
+export default function MemorizePage() {
+  return (
+    <Suspense>
+      <Inner />
+    </Suspense>
   );
 }

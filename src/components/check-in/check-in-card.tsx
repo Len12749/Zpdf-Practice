@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { useAuth, todayKey } from "@/lib/auth-store";
 import { cn } from "@/lib/cn";
@@ -21,22 +22,32 @@ export function CheckInModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const {
-    checkedDays,
-    checkedInToday,
-    streak,
-    speedTickets,
-    checkIn,
-  } = useAuth();
+  const { checkedDays, checkedInToday, streak, speedTickets, checkIn } =
+    useAuth();
+  const [mounted, setMounted] = useState(false);
   const [view, setView] = useState(() => {
     const n = new Date();
     return { y: n.getFullYear(), m: n.getMonth() };
   });
   const [toast, setToast] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // 打开时锁 body 滚动，避免 sticky header 干扰
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
 
   const cells = useMemo(() => {
     const first = new Date(view.y, view.m, 1);
-    // 周一为第一列：getDay() 0=日 → 6
     const startPad = (first.getDay() + 6) % 7;
     const daysInMonth = new Date(view.y, view.m + 1, 0).getDate();
     const list: ({ day: number; key: string } | null)[] = [];
@@ -50,12 +61,22 @@ export function CheckInModal({
 
   const monthLabel = `${view.y}年${view.m + 1}月`;
   const today = todayKey();
+  // 每连续 3 天发 1 张：streak%3===0 时下一张还需再连续 3 天
+  const daysToNextTicket =
+    streak % 3 === 0 ? 3 : 3 - (streak % 3);
 
-  if (!open) return null;
+  if (!open || !mounted) return null;
 
-  const onCheckIn = () => {
-    const res = checkIn();
-    setToast(res.message);
+  const onCheckIn = async () => {
+    setBusy(true);
+    try {
+      const res = await checkIn();
+      setToast(res.message);
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : "签到失败");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const shiftMonth = (delta: number) => {
@@ -65,29 +86,33 @@ export function CheckInModal({
     });
   };
 
-  return (
+  const modal = (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-zinc-950/50 p-4 sm:items-center"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/55 p-4"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label="签到"
     >
       <div
-        className="w-full max-w-md rounded-2xl border border-border bg-surface p-5 shadow-[var(--shadow)] sm:p-6"
+        className="max-h-[min(90dvh,640px)] w-full max-w-md overflow-y-auto rounded-2xl border border-border bg-surface p-5 shadow-[var(--shadow)] sm:p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold tracking-tight">每日签到</h2>
-            <p className="mt-1 text-xs text-muted">
-              连续签到 3 天可获得 1 张加速券
+            <p className="mt-1 text-xs leading-relaxed text-muted">
+              每连续签到 3 天可获得 1 张加速券。距离下次获得加速券还差{" "}
+              <span className="font-semibold text-accent">
+                {daysToNextTicket}
+              </span>{" "}
+              天。
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted hover:bg-surface-muted"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-surface-muted"
             aria-label="关闭"
           >
             <X size={18} />
@@ -153,7 +178,6 @@ export function CheckInModal({
                     !done && isToday && "border border-accent/50 text-accent",
                     !done && !isToday && "text-foreground/80",
                   )}
-                  title={done ? "已签到" : undefined}
                 >
                   {cell.day}
                   {done && (
@@ -178,17 +202,20 @@ export function CheckInModal({
         <Button
           className="mt-4 w-full"
           size="lg"
-          disabled={checkedInToday}
-          onClick={onCheckIn}
+          disabled={checkedInToday || busy}
+          onClick={() => void onCheckIn()}
           icon={
             checkedInToday ? (
               <CheckCircle size={18} weight="fill" />
             ) : undefined
           }
         >
-          {checkedInToday ? "今日已签到" : "立即签到"}
+          {checkedInToday ? "今日已签到" : busy ? "签到中…" : "立即签到"}
         </Button>
       </div>
     </div>
   );
+
+  // 挂到 body，避免 sticky header / backdrop-blur 导致 fixed 定位错位
+  return createPortal(modal, document.body);
 }

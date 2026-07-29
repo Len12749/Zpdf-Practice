@@ -1,18 +1,55 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { QuestionCard } from "@/components/question/question-card";
-import { mockQuestions } from "@/lib/mock-data";
-import { ArrowLeft, CheckCircle, Sparkle } from "@phosphor-icons/react/dist/ssr";
+import { api } from "@/lib/client-api";
+import { useAuth } from "@/lib/auth-store";
+import { ArrowLeft, CheckCircle, Sparkle } from "@phosphor-icons/react";
 
-export default async function ReviewPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
-  const aiCount = mockQuestions.filter(
-    (q) => q.aiGeneratedAnswer || q.aiGeneratedExplanation,
+type Q = {
+  id: string;
+  stem: string;
+  options: { key: string; text: string }[];
+  answer: string[];
+  explanation: string;
+  type: "single" | "multiple";
+  aiGeneratedAnswer: boolean;
+  aiGeneratedExplanation: boolean;
+};
+
+export default function ReviewPage() {
+  const { id } = useParams<{ id: string }>();
+  const { isLoggedIn, loading } = useAuth();
+  const router = useRouter();
+  const [qs, setQs] = useState<Q[]>([]);
+  const [name, setName] = useState("");
+
+  useEffect(() => {
+    if (!loading && !isLoggedIn) router.replace("/login");
+  }, [loading, isLoggedIn, router]);
+
+  useEffect(() => {
+    if (!isLoggedIn || !id) return;
+    void api<{
+      library: { name: string; status: string };
+      questions: Q[];
+      locked: boolean;
+    }>(`/api/libraries/${id}`).then((data) => {
+      if (data.locked || data.library.status === "importing") {
+        router.replace(`/libraries/${id}`);
+        return;
+      }
+      setName(data.library.name);
+      setQs(data.questions);
+    });
+  }, [isLoggedIn, id, router]);
+
+  const aiCount = qs.filter(
+    (q) => Boolean(q.aiGeneratedAnswer) || Boolean(q.aiGeneratedExplanation),
   ).length;
 
   return (
@@ -31,14 +68,16 @@ export default async function ReviewPage({
             题目复审
           </h1>
           <p className="mt-2 text-sm text-muted">
-            可增删改题目。修改答案或解析后，AI 生成标识会自动取消。
+            {name} · 修改答案/解析后 AI 标识会取消
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Badge tone="warning">
-            <Sparkle size={12} weight="fill" className="mr-1" />
-            {aiCount} 题含 AI 补全
-          </Badge>
+          {aiCount > 0 && (
+            <Badge tone="warning">
+              <Sparkle size={12} weight="fill" className="mr-1" />
+              {aiCount} 题含 AI 补全
+            </Badge>
+          )}
           <Link href={`/libraries/${id}`}>
             <Button icon={<CheckCircle size={18} weight="fill" />}>
               确认入库
@@ -47,13 +86,23 @@ export default async function ReviewPage({
         </div>
       </div>
 
-      <div className="mt-6 rounded-[var(--radius-sm)] border border-border bg-surface-muted px-4 py-3 text-xs leading-relaxed text-muted">
-        不完整的题目已自动过滤。请重点检查带「AI 生成」标记的题目。
-      </div>
-
       <div className="mt-8 space-y-4">
-        {mockQuestions.map((q, i) => (
-          <QuestionCard key={q.id} question={q} index={i} mode="manage" />
+        {qs.map((q, i) => (
+          <QuestionCard
+            key={q.id}
+            question={q}
+            index={i}
+            mode="manage"
+            libraryId={id}
+            onDeleted={() =>
+              setQs((list) => list.filter((x) => x.id !== q.id))
+            }
+            onUpdated={() => {
+              void api<{ questions: Q[] }>(`/api/libraries/${id}`).then(
+                (d) => setQs(d.questions),
+              );
+            }}
+          />
         ))}
       </div>
     </div>

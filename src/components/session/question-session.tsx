@@ -1,31 +1,58 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useState } from "react";
-import { QuestionCard } from "@/components/question/question-card";
+import { useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { QuestionCard, type QuestionView } from "@/components/question/question-card";
 import { Button } from "@/components/ui/button";
 import { useSwipeNav } from "@/hooks/use-swipe-nav";
-import type { Library, Question } from "@/lib/mock-data";
+import { api } from "@/lib/client-api";
+import { useAuth } from "@/lib/auth-store";
 import { ArrowLeft, CaretLeft, CaretRight } from "@phosphor-icons/react";
 import { cn } from "@/lib/cn";
 
-type Mode = "practice" | "memorize";
-
 export function QuestionSession({
-  questions,
-  library,
   mode,
   exitHref,
-  subtitle,
 }: {
-  questions: Question[];
-  library: Library;
-  mode: Mode;
+  mode: "practice" | "memorize";
   exitHref: string;
-  subtitle?: string;
 }) {
+  const sp = useSearchParams();
+  const libraryId = sp.get("libraryId") ?? "";
+  const order = sp.get("order") ?? "asc";
+  const wrongOnly = sp.get("wrongOnly") === "1";
+  const { isLoggedIn, loading } = useAuth();
+  const router = useRouter();
+
+  const [questions, setQuestions] = useState<QuestionView[]>([]);
+  const [libName, setLibName] = useState("");
   const [index, setIndex] = useState(0);
   const [nudge, setNudge] = useState<"left" | "right" | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!loading && !isLoggedIn) router.replace("/login");
+  }, [loading, isLoggedIn, router]);
+
+  useEffect(() => {
+    if (!isLoggedIn || !libraryId) return;
+    const q = new URLSearchParams({
+      libraryId,
+      order,
+      ...(wrongOnly ? { wrongOnly: "1" } : {}),
+    });
+    void api<{
+      library: { name: string };
+      questions: QuestionView[];
+    }>(`/api/session-questions?${q}`)
+      .then((d) => {
+        setLibName(d.library.name);
+        setQuestions(d.questions);
+      })
+      .catch((e: Error) => setError(e.message));
+  }, [isLoggedIn, libraryId, order, wrongOnly]);
+
   const total = questions.length;
   const q = questions[index];
 
@@ -47,25 +74,40 @@ export function QuestionSession({
     });
   }, [total]);
 
-  const swipe = useSwipeNav({
-    onPrev: goPrev,
-    onNext: goNext,
-  });
+  const swipe = useSwipeNav({ onPrev: goPrev, onNext: goNext });
 
-  if (!q) return null;
+  if (error) {
+    return (
+      <div className="mx-auto max-w-md px-4 py-16 text-center">
+        <p className="text-sm text-danger">{error}</p>
+        <Link href={exitHref} className="mt-4 inline-block text-sm text-accent">
+          返回
+        </Link>
+      </div>
+    );
+  }
+
+  if (!q) {
+    return (
+      <div className="mx-auto max-w-md px-4 py-16 text-center text-sm text-muted">
+        {total === 0 ? "没有题目可练" : "加载中…"}
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-[720px] px-4 py-8 md:px-6">
       <div className="mb-6 flex items-center justify-between gap-3">
         <Link
           href={exitHref}
-          className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground"
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-danger hover:opacity-80"
         >
           <ArrowLeft size={16} />
           退出
         </Link>
         <p className="truncate text-sm text-muted">
-          {subtitle ?? library.name}
+          {libName}
+          {mode === "memorize" ? " · 背题" : ""}
         </p>
       </div>
 
@@ -93,7 +135,13 @@ export function QuestionSession({
         )}
         {...swipe}
       >
-        <QuestionCard key={q.id} question={q} index={index} mode={mode} />
+        <QuestionCard
+          key={q.id}
+          question={q}
+          index={index}
+          mode={mode}
+          libraryId={libraryId}
+        />
       </div>
 
       <div className="mt-6 flex items-center justify-between gap-3">

@@ -4,111 +4,173 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from "react";
+import { api } from "@/lib/client-api";
 
-function todayKey(d = new Date()) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function addDays(base: Date, delta: number) {
-  const d = new Date(base);
-  d.setDate(d.getDate() + delta);
-  return d;
-}
-
-/** 演示：本月已有若干签到日（不含今天），连续 streak 从昨天往回算 */
-function seedCheckedDays(): string[] {
-  const now = new Date();
-  const keys: string[] = [];
-  // 昨天、前天已签，形成连续 2 天；再签今天 → 连续 3 天发券
-  keys.push(todayKey(addDays(now, -1)));
-  keys.push(todayKey(addDays(now, -2)));
-  // 本月更早零星签到
-  keys.push(todayKey(addDays(now, -5)));
-  keys.push(todayKey(addDays(now, -8)));
-  keys.push(todayKey(addDays(now, -12)));
-  return [...new Set(keys)];
-}
-
-function calcStreak(days: Set<string>, from = new Date()): number {
-  let streak = 0;
-  let cursor = new Date(from.getFullYear(), from.getMonth(), from.getDate());
-  // 若今天未签，从昨天开始计连续
-  if (!days.has(todayKey(cursor))) {
-    cursor = addDays(cursor, -1);
-  }
-  while (days.has(todayKey(cursor))) {
-    streak += 1;
-    cursor = addDays(cursor, -1);
-  }
-  return streak;
-}
+export type AuthUser = {
+  id: string;
+  account: string;
+  email: string;
+  speedTickets: number;
+};
 
 type AuthContextValue = {
+  loading: boolean;
   isLoggedIn: boolean;
-  login: () => void;
-  logout: () => void;
+  user: AuthUser | null;
   checkedDays: Set<string>;
   checkedInToday: boolean;
   streak: number;
   speedTickets: number;
-  checkIn: () => { ok: boolean; earnedTicket: boolean; message: string };
+  refresh: () => Promise<void>;
+  login: (account: string, password: string) => Promise<void>;
+  register: (
+    account: string,
+    password: string,
+    email: string,
+  ) => Promise<void>;
+  logout: () => Promise<void>;
+  checkIn: () => Promise<{ ok: boolean; message: string; earnedTicket: boolean }>;
+  updateEmail: (email: string) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  // 演示默认未登录，便于看「无个人中心」；登录页一点即入
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [checkedDays, setCheckedDays] = useState<Set<string>>(
-    () => new Set(seedCheckedDays()),
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [checkedDays, setCheckedDays] = useState<Set<string>>(new Set());
+  const [checkedInToday, setCheckedInToday] = useState(false);
+  const [streak, setStreak] = useState(0);
+
+  const refresh = useCallback(async () => {
+    try {
+      const data = await api<{
+        user: AuthUser | null;
+        checkIn?: {
+          days: string[];
+          streak: number;
+          checkedInToday: boolean;
+        };
+      }>("/api/auth/me");
+      setUser(data.user);
+      if (data.user && data.checkIn) {
+        setCheckedDays(new Set(data.checkIn.days));
+        setCheckedInToday(data.checkIn.checkedInToday);
+        setStreak(data.checkIn.streak);
+      } else {
+        setCheckedDays(new Set());
+        setCheckedInToday(false);
+        setStreak(0);
+      }
+    } catch {
+      setUser(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const login = useCallback(
+    async (account: string, password: string) => {
+      await api("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ account, password }),
+      });
+      await refresh();
+    },
+    [refresh],
   );
-  const [speedTickets, setSpeedTickets] = useState(1);
 
-  const checkedInToday = checkedDays.has(todayKey());
-  const streak = useMemo(() => calcStreak(checkedDays), [checkedDays]);
+  const register = useCallback(
+    async (account: string, password: string, email: string) => {
+      await api("/api/auth/register", {
+        method: "POST",
+        body: JSON.stringify({ account, password, email }),
+      });
+      await refresh();
+    },
+    [refresh],
+  );
 
-  const checkIn = useCallback(() => {
-    const key = todayKey();
-    if (checkedDays.has(key)) {
-      return { ok: false, earnedTicket: false, message: "今日已签到" };
-    }
-    const next = new Set(checkedDays);
-    next.add(key);
-    const newStreak = calcStreak(next);
-    // 每连续满 3 天发一张（3、6、9…）
-    const earnedTicket = newStreak > 0 && newStreak % 3 === 0;
-    setCheckedDays(next);
-    if (earnedTicket) {
-      setSpeedTickets((n) => n + 1);
-    }
+  const logout = useCallback(async () => {
+    await api("/api/auth/logout", { method: "POST" });
+    setUser(null);
+    setCheckedDays(new Set());
+    setCheckedInToday(false);
+    setStreak(0);
+  }, []);
+
+  const checkIn = useCallback(async () => {
+    const data = await api<{
+      ok: boolean;
+      message: string;
+      earnedTicket: boolean;
+      streak: number;
+      days: string[];
+      speedTickets: number;
+      checkedInToday: boolean;
+    }>("/api/check-in", { method: "POST" });
+    setCheckedDays(new Set(data.days));
+    setStreak(data.streak);
+    setCheckedInToday(data.checkedInToday);
+    setUser((u) =>
+      u ? { ...u, speedTickets: data.speedTickets } : u,
+    );
     return {
-      ok: true,
-      earnedTicket,
-      message: earnedTicket
-        ? `签到成功！连续 ${newStreak} 天，获得 1 张加速券`
-        : `签到成功！已连续 ${newStreak} 天`,
+      ok: data.ok,
+      message: data.message,
+      earnedTicket: data.earnedTicket,
     };
-  }, [checkedDays]);
+  }, []);
+
+  const updateEmail = useCallback(
+    async (email: string) => {
+      await api("/api/profile", {
+        method: "PATCH",
+        body: JSON.stringify({ email }),
+      });
+      setUser((u) => (u ? { ...u, email } : u));
+    },
+    [],
+  );
 
   const value = useMemo<AuthContextValue>(
     () => ({
-      isLoggedIn,
-      login: () => setIsLoggedIn(true),
-      logout: () => setIsLoggedIn(false),
+      loading,
+      isLoggedIn: !!user,
+      user,
       checkedDays,
       checkedInToday,
       streak,
-      speedTickets,
+      speedTickets: user?.speedTickets ?? 0,
+      refresh,
+      login,
+      register,
+      logout,
       checkIn,
+      updateEmail,
     }),
-    [isLoggedIn, checkedDays, checkedInToday, streak, speedTickets, checkIn],
+    [
+      loading,
+      user,
+      checkedDays,
+      checkedInToday,
+      streak,
+      refresh,
+      login,
+      register,
+      logout,
+      checkIn,
+      updateEmail,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -120,4 +182,4 @@ export function useAuth() {
   return ctx;
 }
 
-export { todayKey };
+export { todayKey } from "@/lib/check-in-client";

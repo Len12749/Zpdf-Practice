@@ -1,66 +1,159 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ImportProgressPanel } from "@/components/import/import-progress";
-import {
-  computeTaskTotal,
-  mockPageImages,
-  type ImportProgress,
-} from "@/lib/mock-data";
+import { useFeedback } from "@/components/ui/feedback";
 import { useAuth } from "@/lib/auth-store";
+import { api } from "@/lib/client-api";
 import { cn } from "@/lib/cn";
+import {
+  formatFileSize,
+  MAX_SINGLE_FILE_BYTES,
+  MAX_TOTAL_FILES_BYTES,
+  validateUploadFileSizes,
+} from "@/lib/upload-limits";
 import {
   UploadSimple,
   FilePdf,
   Images,
   DotsSixVertical,
-  MagnifyingGlassPlus,
   Trash,
   Lightning,
   ArrowLeft,
-  X,
-  CaretLeft,
-  CaretRight,
 } from "@phosphor-icons/react";
 
+type LocalPage = { id: string; file: File; url: string; label: string };
+
 export default function NewLibraryPage() {
-  const { speedTickets } = useAuth();
+  const { isLoggedIn, loading, speedTickets, refresh } = useAuth();
+  const { toast } = useFeedback();
+  const router = useRouter();
   const [name, setName] = useState("");
-  const [pages, setPages] = useState(mockPageImages);
+  const [pages, setPages] = useState<LocalPage[]>([]);
   const [useTicket, setUseTicket] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [started, setStarted] = useState(false);
-  const [demoCompleted, setDemoCompleted] = useState(3);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [dropActive, setDropActive] = useState(false);
+  const [progress, setProgress] = useState({
+    completed: 0,
+    total: 1,
+    pageCount: 0,
+    phaseLabel: "提交中…",
+    accelerated: false,
+  });
 
-  const liveProgress: ImportProgress = useMemo(() => {
-    const total = computeTaskTotal(pages.length, "upload");
-    const completed = Math.min(demoCompleted, total);
-    const extractTotal = pages.length;
-    const phaseLabel =
-      completed < extractTotal
-        ? `正在提取第 ${completed + 1} 页题目…`
-        : completed < total
-          ? `正在判断第 ${completed - extractTotal + 1} 组跨页拼接…`
-          : "提取完成，准备复审…";
-    return {
-      completed,
-      total,
-      pageCount: pages.length,
-      phaseLabel,
-      accelerated: useTicket,
+  useEffect(() => {
+    if (!loading && !isLoggedIn) router.replace("/login");
+  }, [loading, isLoggedIn, router]);
+
+  useEffect(() => {
+    return () => {
+      pages.forEach((p) => URL.revokeObjectURL(p.url));
     };
-  }, [pages.length, demoCompleted, useTicket]);
+  }, [pages]);
 
-  const previewIndex = pages.findIndex((p) => p.id === previewId);
-  const preview = previewIndex >= 0 ? pages[previewIndex] : null;
+  useEffect(() => {
+    if (!jobId) return;
+    const t = setInterval(() => {
+      void api<{
+        library: {
+          status: string;
+          importProgress: {
+            completed: number;
+            total: number;
+            pageCount: number;
+            phaseLabel: string;
+            accelerated: boolean;
+            error?: string | null;
+          };
+        };
+      }>(`/api/libraries/${jobId}`)
+        .then((data) => {
+          const p = data.library.importProgress;
+          setProgress({
+            completed: p.completed,
+            total: Math.max(p.total, 1),
+            pageCount: p.pageCount,
+            phaseLabel: p.phaseLabel || "处理中…",
+            accelerated: p.accelerated,
+          });
+          if (data.library.status === "ready") {
+            clearInterval(t);
+            router.push(`/libraries/${jobId}/review`);
+          }
+          if (data.library.status === "failed") {
+            clearInterval(t);
+            toast(p.error || "导入失败", "error");
+            setStarted(false);
+          }
+        })
+        .catch(() => undefined);
+    }, 2000);
+    return () => clearInterval(t);
+  }, [jobId, router, toast]);
 
-  const onDragStart = (id: string) => setDragId(id);
-  const onDrop = (targetId: string) => {
+  const preview =
+    pages.find((p) => p.id === previewId) ?? pages[0] ?? null;
+
+  const addFiles = (fileList: FileList | File[] | null) => {
+    if (!fileList) return;
+    const arr = Array.from(fileList);
+    const next: LocalPage[] = [];
+    const rejected: string[] = [];
+
+    arr.forEach((file, i) => {
+      const ok =
+        /\.(pdf|png|jpe?g|webp|gif)$/i.test(file.name) ||
+        file.type.startsWith("image/") ||
+        file.type === "application/pdf";
+      if (!ok) return;
+      if (file.size > MAX_SINGLE_FILE_BYTES) {
+        rejected.push(
+          `「${file.name}」超过单文件上限 ${formatFileSize(MAX_SINGLE_FILE_BYTES)}`,
+        );
+        return;
+      }
+      next.push({
+        id: `${Date.now()}-${i}-${file.name}`,
+        file,
+        url: URL.createObjectURL(file),
+        label: file.name,
+      });
+    });
+
+    if (!next.length) {
+      if (rejected.length) toast(rejected[0], "error");
+      return;
+    }
+
+    const existingTotal = pages.reduce((s, p) => s + p.file.size, 0);
+    const addTotal = next.reduce((s, p) => s + p.file.size, 0);
+    if (existingTotal + addTotal > MAX_TOTAL_FILES_BYTES) {
+      next.forEach((p) => URL.revokeObjectURL(p.url));
+      toast(
+        `文件总大小将超过 ${formatFileSize(MAX_TOTAL_FILES_BYTES)}（已有 ${formatFileSize(existingTotal)}，本次 ${formatFileSize(addTotal)}）`,
+        "error",
+      );
+      return;
+    }
+
+    if (rejected.length) toast(rejected[0], "error");
+
+    setPages((ps) => {
+      const merged = [...ps, ...next];
+      if (!previewId && merged[0]) setPreviewId(merged[0].id);
+      return merged;
+    });
+  };
+
+  const onReorderDrop = (targetId: string) => {
     if (!dragId || dragId === targetId) return;
     const from = pages.findIndex((p) => p.id === dragId);
     const to = pages.findIndex((p) => p.id === targetId);
@@ -71,6 +164,41 @@ export default function NewLibraryPage() {
     setPages(next);
     setDragId(null);
   };
+
+  const startImport = async () => {
+    const sizeError = validateUploadFileSizes(pages.map((p) => p.file));
+    if (sizeError) {
+      toast(sizeError, "error");
+      return;
+    }
+    setStarted(true);
+    try {
+      const fd = new FormData();
+      fd.set("name", name.trim());
+      fd.set("useTicket", useTicket ? "1" : "0");
+      for (const p of pages) fd.append("files", p.file, p.file.name);
+      const data = await api<{ id: string }>("/api/libraries/upload", {
+        method: "POST",
+        body: fd,
+      });
+      setJobId(data.id);
+      setProgress((p) => ({
+        ...p,
+        pageCount: pages.length,
+        total: pages.length + Math.max(0, pages.length - 1),
+        phaseLabel: "任务已创建…",
+        accelerated: useTicket,
+      }));
+      await refresh();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "上传失败", "error");
+      setStarted(false);
+    }
+  };
+
+  const isPdf = (p: LocalPage) =>
+    p.file.type === "application/pdf" ||
+    p.file.name.toLowerCase().endsWith(".pdf");
 
   return (
     <div className="mx-auto max-w-[1400px] px-4 py-8 md:px-6 md:py-10">
@@ -89,13 +217,10 @@ export default function NewLibraryPage() {
             上传 PDF 或一组图片。PDF 将自动转为图片页。
           </p>
         </div>
-        <Badge tone="neutral">
-          加速券剩余 {speedTickets} 张
-        </Badge>
+        <Badge tone="neutral">加速券剩余 {speedTickets} 张</Badge>
       </div>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-12">
-        {/* Left: config + upload */}
         <div className="space-y-5 lg:col-span-4">
           <fieldset disabled={started} className="space-y-5 disabled:opacity-60">
             <div className="rounded-[var(--radius)] border border-border bg-surface p-5">
@@ -105,25 +230,85 @@ export default function NewLibraryPage() {
                 placeholder="例如：高数期末真题 2024"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                hint="必填，便于在刷题时区分"
               />
             </div>
 
-            <div className="rounded-[var(--radius)] border border-dashed border-border bg-surface p-6 text-center">
+            <div
+              className={cn(
+                "rounded-[var(--radius)] border border-dashed bg-surface p-6 text-center transition-colors",
+                dropActive
+                  ? "border-accent bg-accent-soft/40"
+                  : "border-border",
+              )}
+              onDragEnter={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!started) setDropActive(true);
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!started) setDropActive(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setDropActive(false);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setDropActive(false);
+                if (started) return;
+                addFiles(e.dataTransfer.files);
+              }}
+            >
               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-soft text-accent">
-                <UploadSimple size={24} weight="duotone" />
+                <UploadSimple size={24} weight="regular" />
               </div>
               <p className="mt-3 text-sm font-medium">
-                拖拽文件到此处，或点击选择
+                拖拽 PDF / 图片到此处，或点击选择
               </p>
-              <p className="mt-1 text-xs text-muted">支持 PDF、JPG、PNG</p>
+              <p className="mt-1 text-xs text-muted">
+                支持 PDF、JPG、PNG、WebP · 单文件 ≤{" "}
+                {formatFileSize(MAX_SINGLE_FILE_BYTES)} · 合计 ≤{" "}
+                {formatFileSize(MAX_TOTAL_FILES_BYTES)}
+              </p>
               <div className="mt-4 flex flex-wrap justify-center gap-2">
-                <Button size="sm" variant="outline" icon={<FilePdf size={16} />}>
-                  选择 PDF
-                </Button>
-                <Button size="sm" variant="outline" icon={<Images size={16} />}>
-                  选择图片
-                </Button>
+                <label className="inline-flex cursor-pointer">
+                  <input
+                    type="file"
+                    accept="application/pdf"
+                    className="hidden"
+                    multiple
+                    disabled={started}
+                    onChange={(e) => {
+                      addFiles(e.target.files);
+                      e.target.value = "";
+                    }}
+                  />
+                  <span className="inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-transparent px-3 text-sm font-medium hover:bg-surface-muted">
+                    <FilePdf size={16} />
+                    选择 PDF
+                  </span>
+                </label>
+                <label className="inline-flex cursor-pointer">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    multiple
+                    disabled={started}
+                    onChange={(e) => {
+                      addFiles(e.target.files);
+                      e.target.value = "";
+                    }}
+                  />
+                  <span className="inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-sm)] border border-border bg-transparent px-3 text-sm font-medium hover:bg-surface-muted">
+                    <Images size={16} />
+                    选择图片
+                  </span>
+                </label>
               </div>
             </div>
 
@@ -151,49 +336,23 @@ export default function NewLibraryPage() {
             className="w-full"
             size="lg"
             disabled={!name.trim() || pages.length === 0 || started}
-            onClick={() => {
-              setStarted(true);
-              setDemoCompleted(3);
-            }}
+            onClick={() => void startImport()}
           >
             {started ? "提取中…" : "开始 AI 提取"}
           </Button>
 
           {started && (
             <div className="space-y-3">
-              <ImportProgressPanel progress={liveProgress} variant="panel" />
-              <p className="text-xs leading-relaxed text-muted">
-                任务已提交。你可返回题库列表查看同一进度；导入完成前题库不可打开。
-              </p>
-              <div className="flex flex-col gap-2">
-                <Link href="/libraries">
-                  <Button variant="secondary" size="sm" className="w-full">
-                    返回题库列表查看进度
-                  </Button>
-                </Link>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full"
-                  onClick={() =>
-                    setDemoCompleted((c) =>
-                      Math.min(c + 2, liveProgress.total),
-                    )
-                  }
-                >
-                  模拟进度 +2（演示）
+              <ImportProgressPanel progress={progress} variant="panel" />
+              <Link href="/libraries">
+                <Button variant="secondary" size="sm" className="w-full">
+                  返回题库列表查看进度
                 </Button>
-                <Link href="/libraries/lib-1/review">
-                  <Button variant="ghost" size="sm" className="w-full">
-                    跳过演示，查看复审页
-                  </Button>
-                </Link>
-              </div>
+              </Link>
             </div>
           )}
         </div>
 
-        {/* Right: page strip + main preview */}
         <div
           className={cn(
             "lg:col-span-8",
@@ -204,27 +363,20 @@ export default function NewLibraryPage() {
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-sm font-semibold">页面预览与排序</h2>
               <span className="text-xs text-muted">
-                {started
-                  ? "导入中，页面顺序已锁定"
-                  : "拖拽调整顺序 · 点击缩略图查看大图"}
+                {pages.length} 个文件 · 拖拽缩略图调序
               </span>
             </div>
-
             <div className="grid gap-4 md:grid-cols-[100px_1fr]">
-              {/* Thumbnails */}
-              <ul className="flex gap-2 overflow-x-auto pb-1 md:flex-col md:max-h-[560px] md:overflow-y-auto md:overflow-x-visible">
+              <ul className="flex gap-2 overflow-x-auto pb-1 md:max-h-[560px] md:flex-col md:overflow-y-auto">
                 {pages.map((page, i) => (
                   <li
                     key={page.id}
                     draggable={!started}
-                    onDragStart={() => !started && onDragStart(page.id)}
+                    onDragStart={() => setDragId(page.id)}
                     onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => !started && onDrop(page.id)}
+                    onDrop={() => onReorderDrop(page.id)}
                     className={cn(
                       "group relative shrink-0",
-                      started
-                        ? "cursor-not-allowed"
-                        : "cursor-grab active:cursor-grabbing",
                       dragId === page.id && "opacity-50",
                     )}
                   >
@@ -232,18 +384,24 @@ export default function NewLibraryPage() {
                       type="button"
                       onClick={() => setPreviewId(page.id)}
                       className={cn(
-                        "block w-[88px] overflow-hidden rounded-lg border-2 transition-colors",
-                        previewId === page.id
+                        "block w-[88px] overflow-hidden rounded-lg border-2",
+                        preview?.id === page.id
                           ? "border-accent"
-                          : "border-border hover:border-accent/40",
+                          : "border-border",
                       )}
                     >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={page.url}
-                        alt={page.label}
-                        className="aspect-[3/4] w-full object-cover"
-                      />
+                      {isPdf(page) ? (
+                        <div className="flex aspect-[3/4] items-center justify-center bg-surface-muted text-xs text-muted">
+                          PDF
+                        </div>
+                      ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={page.url}
+                          alt={page.label}
+                          className="aspect-[3/4] w-full object-cover"
+                        />
+                      )}
                     </button>
                     <span className="mt-1 block text-center font-mono text-[10px] text-muted">
                       {i + 1}
@@ -254,10 +412,16 @@ export default function NewLibraryPage() {
                     <button
                       type="button"
                       onClick={() =>
-                        setPages((ps) => ps.filter((p) => p.id !== page.id))
+                        setPages((ps) => {
+                          const next = ps.filter((p) => p.id !== page.id);
+                          if (previewId === page.id) {
+                            setPreviewId(next[0]?.id ?? null);
+                          }
+                          return next;
+                        })
                       }
                       className="absolute right-0.5 top-0.5 rounded bg-zinc-950/60 p-0.5 text-white opacity-0 group-hover:opacity-100"
-                      aria-label="删除页"
+                      aria-label="删除"
                     >
                       <Trash size={12} />
                     </button>
@@ -265,81 +429,30 @@ export default function NewLibraryPage() {
                 ))}
               </ul>
 
-              {/* Large preview area */}
               <div className="flex min-h-[320px] flex-col items-center justify-center rounded-xl bg-surface-muted p-4 md:min-h-[560px]">
-                {pages[0] ? (
-                  <>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                {preview ? (
+                  isPdf(preview) ? (
+                    <p className="text-sm text-muted">
+                      PDF 将在上传后自动转图（{preview.label}）
+                    </p>
+                  ) : (
+                    // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={(preview ?? pages[0]).url}
-                      alt={(preview ?? pages[0]).label}
-                      className="max-h-[480px] w-auto max-w-full rounded-lg border border-border object-contain shadow-sm"
+                      src={preview.url}
+                      alt={preview.label}
+                      className="max-h-[480px] w-auto max-w-full rounded-lg border border-border object-contain"
                     />
-                    <button
-                      type="button"
-                      onClick={() => setPreviewId((preview ?? pages[0]).id)}
-                      className="mt-3 inline-flex items-center gap-1.5 text-sm text-accent hover:underline"
-                    >
-                      <MagnifyingGlassPlus size={16} />
-                      全屏查看
-                    </button>
-                  </>
+                  )
                 ) : (
-                  <p className="text-sm text-muted">请先上传文件</p>
+                  <p className="text-sm text-muted">
+                    拖拽或选择文件后在此预览
+                  </p>
                 )}
               </div>
             </div>
           </div>
         </div>
       </div>
-
-      {/* Lightbox */}
-      {preview && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/80 p-4"
-          onClick={() => setPreviewId(null)}
-        >
-          <button
-            type="button"
-            className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
-            onClick={() => setPreviewId(null)}
-            aria-label="关闭"
-          >
-            <X size={22} />
-          </button>
-          <button
-            type="button"
-            className="absolute left-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 disabled:opacity-30"
-            disabled={previewIndex <= 0}
-            onClick={(e) => {
-              e.stopPropagation();
-              setPreviewId(pages[previewIndex - 1]?.id ?? null);
-            }}
-            aria-label="上一页"
-          >
-            <CaretLeft size={24} />
-          </button>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={preview.url}
-            alt={preview.label}
-            className="max-h-[90dvh] max-w-[90vw] rounded-lg object-contain"
-            onClick={(e) => e.stopPropagation()}
-          />
-          <button
-            type="button"
-            className="absolute right-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 disabled:opacity-30 md:right-16"
-            disabled={previewIndex >= pages.length - 1}
-            onClick={(e) => {
-              e.stopPropagation();
-              setPreviewId(pages[previewIndex + 1]?.id ?? null);
-            }}
-            aria-label="下一页"
-          >
-            <CaretRight size={24} />
-          </button>
-        </div>
-      )}
     </div>
   );
 }

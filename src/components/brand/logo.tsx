@@ -12,7 +12,7 @@ export function BrandLogo({ size = 32, className, priority }: Props) {
   return (
     <Image
       src="/logo.webp"
-      alt="Zpdf_practice"
+      alt="Zpdf-Practice"
       width={size}
       height={size}
       priority={priority}

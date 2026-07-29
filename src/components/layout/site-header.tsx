@@ -42,7 +42,7 @@ export function SiteHeader() {
         <Link href="/" className="flex shrink-0 items-center gap-2.5">
           <BrandLogo size={32} priority className="h-8 w-8" />
           <span className="text-[15px] font-semibold tracking-tight">
-            Zpdf_practice
+            Zpdf-Practice
           </span>
         </Link>
 
@@ -98,7 +98,11 @@ export function SiteHeader() {
                 />
               </button>
               <Link href="/profile" className="hidden sm:block">
-                <Button variant="ghost" size="sm" icon={<UserCircle size={18} />}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<UserCircle size={18} />}
+                >
                   个人中心
                 </Button>
               </Link>

@@ -6,33 +6,34 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { mockUser } from "@/lib/mock-data";
 import { useAuth } from "@/lib/auth-store";
 import {
   Envelope,
   Lightning,
-  FolderOpen,
   User,
   SignOut,
 } from "@phosphor-icons/react";
 
 export default function ProfilePage() {
-  const { isLoggedIn, speedTickets, streak, logout } = useAuth();
+  const { isLoggedIn, loading, user, streak, logout, updateEmail } = useAuth();
   const router = useRouter();
-  const [email, setEmail] = useState(mockUser.email);
+  const [email, setEmail] = useState("");
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!isLoggedIn) router.replace("/login");
-  }, [isLoggedIn, router]);
+    if (!loading && !isLoggedIn) router.replace("/login");
+  }, [loading, isLoggedIn, router]);
 
-  if (!isLoggedIn) {
+  useEffect(() => {
+    if (user?.email) setEmail(user.email);
+  }, [user?.email]);
+
+  if (loading || !user) {
     return (
-      <div className="mx-auto max-w-md px-4 py-16 text-center">
-        <p className="text-sm text-muted">请先登录</p>
-        <Link href="/login" className="mt-4 inline-block">
-          <Button>去登录</Button>
-        </Link>
+      <div className="mx-auto max-w-md px-4 py-16 text-center text-sm text-muted">
+        加载中…
       </div>
     );
   }
@@ -49,7 +50,7 @@ export default function ProfilePage() {
               <User size={24} weight="duotone" />
             </div>
             <div>
-              <p className="font-semibold">{mockUser.account}</p>
+              <p className="font-semibold">{user.account}</p>
               <p className="text-xs text-muted">登录账号</p>
             </div>
           </div>
@@ -62,21 +63,15 @@ export default function ProfilePage() {
               <span className="text-xs">加速券</span>
             </div>
             <p className="mt-2 font-mono text-2xl font-semibold">
-              {speedTickets}
+              {user.speedTickets}
             </p>
             <p className="mt-1 text-xs text-muted">连续 3 天签到得 1 张</p>
           </div>
           <div className="rounded-[var(--radius)] border border-border bg-surface p-4">
-            <div className="flex items-center gap-2 text-muted">
-              <FolderOpen size={18} className="text-accent" />
-              <span className="text-xs">连续签到</span>
-            </div>
+            <p className="text-xs text-muted">连续签到</p>
             <p className="mt-2 font-mono text-2xl font-semibold">
               {streak}
               <span className="text-base font-normal text-muted"> 天</span>
-            </p>
-            <p className="mt-1 text-xs text-muted">
-              题库 {mockUser.libraryCount}/{mockUser.libraryLimit}
             </p>
           </div>
         </div>
@@ -98,12 +93,20 @@ export default function ProfilePage() {
             }}
             hint="用于我们与您联系，无需验证"
           />
+          {error && <p className="mt-2 text-sm text-danger">{error}</p>}
           <Button
             className="mt-4"
-            onClick={() => setSaved(true)}
-            disabled={!email.trim()}
+            disabled={!email.trim() || busy}
+            onClick={() => {
+              setBusy(true);
+              setError("");
+              void updateEmail(email)
+                .then(() => setSaved(true))
+                .catch((e: Error) => setError(e.message))
+                .finally(() => setBusy(false));
+            }}
           >
-            {saved ? "已保存（演示）" : "保存邮箱"}
+            {saved ? "已保存" : busy ? "保存中…" : "保存邮箱"}
           </Button>
         </div>
 
@@ -113,12 +116,11 @@ export default function ProfilePage() {
         </div>
 
         <Button
-          variant="outline"
+          variant="danger"
           className="w-full"
           icon={<SignOut size={18} />}
           onClick={() => {
-            logout();
-            router.push("/");
+            void logout().then(() => router.push("/"));
           }}
         >
           退出登录
