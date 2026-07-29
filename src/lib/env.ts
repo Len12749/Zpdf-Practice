@@ -16,5 +16,12 @@ export const env = {
   ).replace(/\/$/, ""),
   geminiApiKey: process.env.GEMINI_API_KEY ?? "",
   geminiModel: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
+  /**
+   * 是否打印模型完整输出到终端，并写入 .tmp/model-logs/
+   * 设 GEMINI_LOG_OUTPUT=1 开启（排查 JSON/提取问题时用）
+   */
+  geminiLogOutput:
+    process.env.GEMINI_LOG_OUTPUT === "1" ||
+    process.env.GEMINI_LOG_OUTPUT === "true",
   libraryLimit: 10,
 };

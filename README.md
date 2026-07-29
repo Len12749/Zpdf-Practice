@@ -1,36 +1,148 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Zpdf-Practice
 
-## Getting Started
+## 1. 项目概述
 
-First, run the development server:
+**Zpdf-Practice** 是北京智通明识科技有限公司推出的**试卷智能提取与刷题** Web 应用。
+
+上传 PDF 或图片试卷后，系统借助 AI 自动识别并结构化**选择题**，支持人工复审编辑，再进入刷题、背题、错题本与收藏等学习流程。
+
+### 主要能力
+
+| 模块 | 说明 |
+|------|------|
+| 题库导入 | PDF / 图片上传（自动转图、排序），或 CSV 模板导入 |
+| AI 提取 | 仅提取选择题；支持跨页题目合并；缺失答案/解析可 AI 补全并标注 |
+| 题库管理 | 查看、编辑、删除题目；每账号最多 10 个题库 |
+| 刷题 / 背题 | 顺序 / 逆序 / 乱序；刷题答错即时记入错题本 |
+| 错题本 / 收藏 | 按题库查看错题；「我已学会」移出；收藏夹复习 |
+| 签到加速 | 连续签到可获加速券，提取任务可选用加速 |
+| 管理后台 | 用户列表、加速券调整、注销用户（独立管理员会话） |
+
+### 技术栈
+
+- **前端 / 全栈**：Next.js（App Router）、React、TypeScript、Tailwind CSS  
+- **数据**：MySQL + Drizzle ORM  
+- **AI**：OpenAI 兼容接口（如 Gemini 中转）  
+- **文档**：PDF.js 转图、KaTeX / Markdown 公式混排  
+
+---
+
+## 2. 如何启动
+
+### 环境要求
+
+- Node.js 20+（建议）
+- npm
+- Docker（用于本地 MySQL）
+
+### 2.1 安装依赖
+
+```bash
+npm install
+```
+
+### 2.2 配置环境变量
+
+复制示例配置并按需填写：
+
+```bash
+cp .env.example .env
+```
+
+至少需要配置：
+
+| 变量 | 说明 |
+|------|------|
+| `DATABASE_URL` | MySQL 连接串（默认见 `.env.example`，端口 **3307**） |
+| `AUTH_SECRET` | 会话签名密钥，生产环境请改成随机长串 |
+| `GEMINI_API_KEY` | AI 接口 Key |
+| `GEMINI_BASE_URL` | AI 接口基址 |
+| `GEMINI_MODEL` | 模型名（如 `gemini-2.5-flash`） |
+
+可选：
+
+| 变量 | 说明 |
+|------|------|
+| `ADMIN_ACCOUNT` / `ADMIN_PASSWORD` | 管理后台账号（默认见 `.env.example`） |
+| `GEMINI_LOG_OUTPUT` | 设为 `1` 时打印模型原文到终端与 `.tmp/model-logs/`（排查用，默认 `0`） |
+
+### 2.3 启动数据库
+
+```bash
+npm run db:up
+```
+
+等待 MySQL 健康后推送表结构：
+
+```bash
+npm run db:push
+```
+
+（可选）打开 Drizzle Studio：
+
+```bash
+npm run db:studio
+```
+
+### 2.4 开发模式
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+浏览器打开 [http://localhost:3000](http://localhost:3000)。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+局域网其他设备访问时，可监听所有网卡：
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npx next dev -H 0.0.0.0 -p 3000
+```
 
-## Learn More
+### 2.5 生产构建
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run build
+npm run start
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### 2.6 常用脚本
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| 命令 | 说明 |
+|------|------|
+| `npm run dev` | 开发服务器 |
+| `npm run build` | 生产构建（不会调用 AI，也不会打模型日志） |
+| `npm run start` | 生产启动 |
+| `npm run db:up` / `db:down` | 启停 Docker MySQL |
+| `npm run db:push` | 同步数据库结构 |
+| `npm run db:logs` | 查看 MySQL 日志 |
 
-## Deploy on Vercel
+### 2.7 说明
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- 上传与转图临时文件在 `.tmp/`，可随时删除；删除后不影响已入库题目（页面预览图可能失效）。  
+- 管理后台入口：`/admin/login`（使用 `.env` 中的管理员账号）。  
+- 当前 AI 提取**仅支持选择题**；整卷无选择题时任务会失败并给出明确提示。  
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+---
+
+## 3. 关于我们
+
+**北京智通明识科技有限公司**成立于 2025 年，依托北京理工大学孵化器创立，并得到北京理工大学经济学院等多位老师与专业人员的支持与指导。公司致力于人工智能技术产品的应用开发，推动科研成果与实际需求结合，逐步形成「产学研用」一体化的成果转化机制。
+
+### 业务方向
+
+智能文档处理、OCR 文字识别、多语言机器翻译、PDF 结构化解析、通用人工智能模型集成，以及面向机构的定制化技术服务。相关产品已服务国有企业、民营企事业单位与高校科研团队等。
+
+### 团队
+
+成员来自北京理工大学、北京大学、上海交通大学、哈尔滨工业大学、大连理工大学、北京外国语大学等高校，亦有中国人民大学、香港城市大学等交流实习同学。专业覆盖经济学、数学、计算机、物理与外语翻译等，具备产品开发、数据处理与项目交付能力。
+
+### 相关产品
+
+- **Zpdf-Practice**（本项目）：试卷智能提取与刷题  
+- **[Zpdf](https://zhiyipdf.com)**：智能 PDF 处理平台（结构化提取、格式转换、OCR 与内容整理等）  
+
+### 联系与合作
+
+欢迎人才加盟与商务合作。可通过产品内注册邮箱与我们联系；用户交流 QQ 群：**160804101**（入群可领加速券）。
+
+官网 / 产品站：[https://zhiyipdf.com](https://zhiyipdf.com)

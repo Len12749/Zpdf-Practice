@@ -5,6 +5,8 @@ import {
   completeAnswerExplanation,
   createGeminiPool,
   extractBlocksFromPage,
+  extractBlocksFromPageWithPrevContext,
+  looksLikeStemContinuation,
   mergeBlockContent,
   shouldMergeBlocks,
   type ExtractedBlock,
@@ -97,8 +99,34 @@ export async function runExtractJob(
     const mergePromises: Promise<void>[] = [];
 
     /**
+     * 合并 prev 与 nextPage 中最合适的续写块（优先第 0 块，否则扫 ②③ 开头）。
+     */
+    const tryMergeAcross = async (
+      prevPage: ExtractedBlock[],
+      nextPage: ExtractedBlock[],
+    ) => {
+      if (!prevPage.length || !nextPage.length) return;
+      const prev = prevPage[prevPage.length - 1];
+      let nextIdx = 0;
+      if (!looksLikeStemContinuation(prev, nextPage[0])) {
+        const found = nextPage.findIndex(
+          (b, i) => i > 0 && looksLikeStemContinuation(prev, b),
+        );
+        if (found >= 0) nextIdx = found;
+      }
+      const next = nextPage[nextIdx];
+      const merge =
+        looksLikeStemContinuation(prev, next) ||
+        (await shouldMergeBlocks(prev, next));
+      throwIfCancelled(libraryId);
+      if (merge) {
+        prevPage[prevPage.length - 1] = mergeBlockContent(prev, next);
+        nextPage.splice(nextIdx, 1);
+      }
+    };
+
+    /**
      * 相邻两页都提取完后，立刻把跨页判断丢进低优先队列。
-     * 高优先提取占满时它会等；提取快结束、池子有空槽时自动填入。
      */
     const scheduleMerges = () => {
       for (let i = 0; i < mergeCount; i++) {
@@ -111,17 +139,7 @@ export async function runExtractJob(
             throwIfCancelled(libraryId);
             const prevPage = pageBlocks[pair] ?? [];
             const nextPage = pageBlocks[pair + 1] ?? [];
-            if (prevPage.length && nextPage.length) {
-              const prev = prevPage[prevPage.length - 1];
-              const next = nextPage[0];
-              const merge = await shouldMergeBlocks(prev, next);
-              throwIfCancelled(libraryId);
-              if (merge) {
-                const merged = mergeBlockContent(prev, next);
-                prevPage[prevPage.length - 1] = merged;
-                nextPage.shift();
-              }
-            }
+            await tryMergeAcross(prevPage, nextPage);
             await bump(
               `跨页判断 ${pair + 1}/${mergeCount}（与提取并行，提取优先）`,
             );
@@ -144,9 +162,60 @@ export async function runExtractJob(
     );
 
     await Promise.all(extractPromises);
-    // 兜底：确保所有可判跨页都已入队
+    // 先等并行触发的跨页任务结束，再做截断补抽，避免竞态
     scheduleMerges();
     await Promise.all(mergePromises);
+
+    // 上页末题截断且下页首不像续写：带上下文重抽下页，避免丢掉 ②③④
+    for (let i = 0; i < pageCount - 1; i++) {
+      throwIfCancelled(libraryId);
+      const prevPage = pageBlocks[i] ?? [];
+      const last = prevPage[prevPage.length - 1];
+      if (!last) continue;
+      // 已合并完整则跳过
+      if (
+        !last.truncated &&
+        last.position === "full" &&
+        last.options.length >= 2 &&
+        !/①[^\n]{0,40}$/.test(last.stem)
+      ) {
+        continue;
+      }
+      const needsCtx =
+        last.truncated ||
+        last.position === "end" ||
+        /①[^\n]{0,60}$/.test(last.stem);
+      if (!needsCtx) continue;
+      const nextPage = pageBlocks[i + 1] ?? [];
+      const head = nextPage[0];
+      if (head && looksLikeStemContinuation(last, head)) {
+        await tryMergeAcross(prevPage, nextPage);
+        continue;
+      }
+
+      await setProgress(libraryId, {
+        importPhaseLabel: `补抽第 ${i + 2} 页页首续写（跨页）…`,
+      });
+      const re = await pool.runHigh(async () => {
+        throwIfCancelled(libraryId);
+        return extractBlocksFromPageWithPrevContext(
+          pagePaths[i + 1],
+          i + 1,
+          last,
+        );
+      });
+      throwIfCancelled(libraryId);
+      if (re.length) {
+        pageBlocks[i + 1] = re;
+        await tryMergeAcross(prevPage, pageBlocks[i + 1] ?? []);
+      }
+    }
+
+    // 最终再扫一遍跨页（补抽后可能仍有未合并）
+    for (let i = 0; i < pageCount - 1; i++) {
+      throwIfCancelled(libraryId);
+      await tryMergeAcross(pageBlocks[i] ?? [], pageBlocks[i + 1] ?? []);
+    }
 
     throwIfCancelled(libraryId);
     await setProgress(libraryId, {

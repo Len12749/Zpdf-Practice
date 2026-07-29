@@ -134,11 +134,56 @@ async function fileToInlinePart(filePath: string): Promise<GeminiPart> {
   };
 }
 
+const MODEL_LOG_DIR = path.join(
+  /* turbopackIgnore: true */ process.cwd(),
+  ".tmp",
+  "model-logs",
+);
+
+/** 打印并落盘模型原文，方便对照 JSON 报错 */
+async function logModelOutput(
+  tag: string,
+  body: string,
+  opts?: { force?: boolean; level?: "info" | "error" },
+) {
+  const force = opts?.force ?? false;
+  const level = opts?.level ?? "info";
+  if (!env.geminiLogOutput && !force) return;
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const safeTag = tag.replace(/[^\w.-]+/g, "_").slice(0, 80);
+  const header = `[gemini:${safeTag}] ${body.length} chars`;
+
+  if (level === "error") {
+    console.error(`\n========== ${header} (ERROR) ==========\n${body}\n========== end ${safeTag} ==========\n`);
+  } else {
+    console.log(`\n========== ${header} ==========\n${body}\n========== end ${safeTag} ==========\n`);
+  }
+
+  try {
+    await fs.mkdir(MODEL_LOG_DIR, { recursive: true });
+    const file = path.join(MODEL_LOG_DIR, `${stamp}_${safeTag}.txt`);
+    await fs.writeFile(
+      file,
+      `# tag: ${tag}\n# at: ${new Date().toISOString()}\n# chars: ${body.length}\n\n${body}\n`,
+      "utf8",
+    );
+    console.log(`[gemini] 已写入 ${file}`);
+  } catch (e) {
+    console.error("[gemini] 写日志文件失败", e);
+  }
+}
+
 /**
  * openjk 该 API Key 平台不是 gemini native。
  * 实测可用：POST /v1/chat/completions + model=gemini-2.5-flash + 多模态 content。
+ * @param logTag 调试标签，如 extract-page-1；开启 GEMINI_LOG_OUTPUT=1 时打印全文
  */
-export async function geminiGenerate(parts: GeminiPart[], temperature = 0.2) {
+export async function geminiGenerate(
+  parts: GeminiPart[],
+  temperature = 0.2,
+  logTag = "call",
+) {
   if (!env.geminiApiKey) {
     throw new Error("未配置 GEMINI_API_KEY");
   }
@@ -183,12 +228,15 @@ export async function geminiGenerate(parts: GeminiPart[], temperature = 0.2) {
   });
   if (!res.ok) {
     const text = await res.text();
+    await logModelOutput(`${logTag}-http-error`, text, { force: true, level: "error" });
     throw new Error(`模型调用错误 ${res.status}: ${text.slice(0, 400)}`);
   }
   const data = (await res.json()) as {
     choices?: Array<{ message?: { content?: string | null } }>;
   };
-  return data.choices?.[0]?.message?.content?.trim() ?? "";
+  const out = data.choices?.[0]?.message?.content?.trim() ?? "";
+  await logModelOutput(logTag, out || "(empty response)");
+  return out;
 }
 
 /**
@@ -269,8 +317,14 @@ function parseJsonLoose(text: string) {
       ? ` 出错附近：${snippetAround(body, pos)}`
       : ` 原文摘要：${body.slice(0, 120).replace(/\s+/g, " ")}${body.length > 120 ? "…" : ""}`;
 
+  // 解析失败时强制打出全文，便于对照 position
+  void logModelOutput("json-parse-fail", raw || "(empty)", {
+    force: true,
+    level: "error",
+  });
+
   throw new Error(
-    `模型返回的 JSON 无法解析（${msg}）。${around} 多为题干里的反斜杠/LaTeX 转义问题，已尝试自动修复仍失败。`,
+    `模型返回的 JSON 无法解析（${msg}）。${around} 完整原文已打印到终端并写入 .tmp/model-logs/（若已开启日志或本次失败强制落盘）。`,
   );
 }
 
@@ -313,16 +367,20 @@ skipReason 用简短中文说明即可，例如「本页为填空/解答」「�
 硬性规则：
 1. **禁止私自补充题干或选项**：看不清、被裁切、缺失的字不要猜补；宁可 truncated=true，也不要脑补完整句子。
 2. **题干不要输出序号**：不要写「1.」「2、」「（3）」「第4题」等题号，只保留题目正文。
-3. 选项字母统一为 A/B/C/D/E...（忽略①Ⅰ等符号，映射到 ABC）；每题 options 至少 2 项。
+3. 选项字母统一为 A/B/C/D/E...（忽略①Ⅰ等符号，映射到 ABC）。**截断题不要编造未见选项**：页上只见到部分选项就只抄见的；完全未见 A/B 行则 options 可为 []。
 4. **答案/解析仅当卷面明确印出时才填写**：
    - 卷面有明确答案（如「答案：C」或答题卡标注）→ answer 填字母，answerOnPaper=true
    - 否则 answer 必须 []，answerOnPaper=false（禁止根据题意猜答案）
    - 卷面有解析文字 → explanation 抄录，explanationOnPaper=true
    - 否则 explanation 必须 ""，explanationOnPaper=false（禁止写解析）
-5. 题干或选项严重缺失的块不要输出；非选择题不要输出。
-6. 跨页截断：truncated=true，position 用 start/middle/end，仍只抄可见部分。
+5. 非选择题不要输出。跨页残片（见下）即使不完整也必须输出。
+6. **跨页截断（极重要）**：
+   - 页末题干/选项未完：truncated=true，position="end"，只抄本页可见部分；**禁止补全后半段选项或 ②③④**。
+   - 页首是上题续写（如以 ②③④ 开头、或只有后半选项/半截题干）：也必须单独输出一块，truncated=true，position="start"，**不要因「没有完整题干」而丢弃**；不要把续写并进下一道完整新题。
+   - 完整题：truncated=false，position="full"。
 7. **换行**：保持原文换行，JSON 字符串内用 \\n，禁止压成一行。
 8. **JSON 转义（极易出错）**：字符串里反斜杠必须加倍。例如 LaTeX 的 \\frac 在 JSON 中写成 \\\\frac；优先用 $...$ 写公式；禁止输出 Markdown 代码块。
+9. **解析/说明文字中的行内公式**：用 $...$ 写在句子中间，**不要**把每个公式单独占一行。
 ${LATEX_PROMPT_BLOCK}
 `.trim();
 
@@ -358,12 +416,16 @@ export async function extractBlocksFromPage(
   pageIndex: number,
 ): Promise<ExtractedBlock[]> {
   const image = await fileToInlinePart(imagePath);
-  const text = await geminiGenerate([
-    {
-      text: `这是试卷第 ${pageIndex + 1} 页。请只提取本页选择题；若无选择题，按约定返回空 blocks。\n${EXTRACT_SCHEMA_HINT}`,
-    },
-    image,
-  ]);
+  const text = await geminiGenerate(
+    [
+      {
+        text: `这是试卷第 ${pageIndex + 1} 页。请只提取本页选择题；若无选择题，按约定返回空 blocks。\n${EXTRACT_SCHEMA_HINT}`,
+      },
+      image,
+    ],
+    0.2,
+    `extract-page-${pageIndex + 1}`,
+  );
   const data = parseJsonLoose(text) as {
     blocks?: Array<Record<string, unknown>>;
     hasChoiceQuestions?: boolean;
@@ -377,53 +439,145 @@ export async function extractBlocksFromPage(
   }
 
   return rawBlocks
-    .map((b) => {
-      const stem = stripStemNumber(String(b.stem ?? ""));
-      const options = Array.isArray(b.options)
-        ? (b.options as Array<{ key?: string; text?: string }>)
-            .map((o) => ({
-              key: String(o.key ?? "")
-                .toUpperCase()
-                .replace(/[^A-Z]/g, "")
-                .slice(0, 1),
-              text: edgeTrim(String(o.text ?? "")),
-            }))
-            .filter((o) => o.key && o.text)
-        : [];
+    .map((b) => mapRawBlock(b, pageIndex))
+    .filter((b): b is ExtractedBlock => b != null);
+}
 
-      let answer = normalizeAnswerField(b.answer);
-      let explanation = edgeTrim(String(b.explanation ?? ""));
+function mapRawBlock(
+  b: Record<string, unknown>,
+  pageIndex: number,
+): ExtractedBlock | null {
+  const stem = stripStemNumber(String(b.stem ?? ""));
+  const options = Array.isArray(b.options)
+    ? (b.options as Array<{ key?: string; text?: string }>)
+        .map((o) => ({
+          key: String(o.key ?? "")
+            .toUpperCase()
+            .replace(/[^A-Z]/g, "")
+            .slice(0, 1),
+          text: edgeTrim(String(o.text ?? "")),
+        }))
+        .filter((o) => o.key && o.text)
+    : [];
 
-      const answerOnPaper = parseOnPaperFlag(
-        b.answerOnPaper ?? b.answer_on_paper,
-        answer.length > 0,
-      );
-      const explanationOnPaper = parseOnPaperFlag(
-        b.explanationOnPaper ?? b.explanation_on_paper,
-        !isBlankExplanation(explanation),
-      );
+  let answer = normalizeAnswerField(b.answer);
+  let explanation = edgeTrim(String(b.explanation ?? ""));
 
-      if (!answerOnPaper) answer = [];
-      if (!explanationOnPaper) explanation = "";
+  const answerOnPaper = parseOnPaperFlag(
+    b.answerOnPaper ?? b.answer_on_paper,
+    answer.length > 0,
+  );
+  const explanationOnPaper = parseOnPaperFlag(
+    b.explanationOnPaper ?? b.explanation_on_paper,
+    !isBlankExplanation(explanation),
+  );
 
-      return {
-        stem,
-        options,
-        answer,
-        explanation,
-        answerOnPaper,
-        explanationOnPaper,
-        truncated: Boolean(b.truncated),
-        pageIndex,
-        position: (["full", "start", "end", "middle"].includes(
-          String(b.position),
-        )
-          ? b.position
-          : "full") as ExtractedBlock["position"],
-      };
-    })
-    // 再次兜底：非选择 / 选项不足 2 个不入库
-    .filter((b) => b.stem && b.options.length >= 2);
+  if (!answerOnPaper) answer = [];
+  if (!explanationOnPaper) explanation = "";
+
+  const truncated = Boolean(b.truncated);
+  const position = (
+    ["full", "start", "end", "middle"].includes(String(b.position))
+      ? b.position
+      : truncated
+        ? "end"
+        : "full"
+  ) as ExtractedBlock["position"];
+
+  if (!stem) return null;
+  // 完整题：至少 2 选项；跨页残片允许选项不足，留给合并
+  const isFragment =
+    truncated || position === "start" || position === "end";
+  if (!isFragment && options.length < 2) return null;
+
+  return {
+    stem,
+    options,
+    answer,
+    explanation,
+    answerOnPaper,
+    explanationOnPaper,
+    truncated,
+    pageIndex,
+    position,
+  };
+}
+
+/** 是否像「上题跨页续写」（②③ 开头等） */
+export function looksLikeStemContinuation(
+  prev: ExtractedBlock,
+  next: ExtractedBlock,
+): boolean {
+  const n = edgeTrim(next.stem);
+  // 以圈号/数字序号续写开头
+  if (/^[②③④⑤⑥⑦⑧⑨⑩]/.test(n)) return true;
+  if (/^[2-9]\s*[.、．)）]/.test(n) && (prev.truncated || prev.position === "end"))
+    return true;
+  // 上题 ① 未写完，下题以 ② 接
+  if (/①[^\n]{0,80}$/.test(prev.stem) && /②/.test(n.slice(0, 40))) return true;
+  // 明确标记
+  if (
+    (prev.truncated || prev.position === "end") &&
+    (next.position === "start" || next.truncated)
+  ) {
+    // 排除：下块已是完整新题（长题干 + 完整选项且不像续写）
+    if (
+      next.options.length >= 2 &&
+      n.length > 80 &&
+      !/^[②③④⑤⑥⑦⑧⑨⑩]/.test(n) &&
+      next.position === "full" &&
+      !next.truncated
+    ) {
+      return false;
+    }
+    if (next.position === "start" || next.truncated) return true;
+  }
+  return false;
+}
+
+/**
+ * 上页末题被截断时，带着上文再抽下一页，优先抽出页首续写块。
+ */
+export async function extractBlocksFromPageWithPrevContext(
+  imagePath: string,
+  pageIndex: number,
+  prevTail: ExtractedBlock,
+): Promise<ExtractedBlock[]> {
+  const image = await fileToInlinePart(imagePath);
+  const tail = prevTail.stem.slice(-280);
+  const text = await geminiGenerate(
+    [
+      {
+        text: `这是试卷第 ${pageIndex + 1} 页。
+
+【重要】上一页最后一题在页末被截断，尚未结束。上一页可见末尾：
+"""
+${tail}
+"""
+options 快照: ${JSON.stringify(prevTail.options)}
+
+请：
+1. **首先**提取本页页首对上一题的续写（②③④、剩余选项等）→ 单独一块，position="start"，truncated 按是否写完；stem 只写本页续写部分，不要重复上一页已有长文。
+2. 然后再提取本页其它完整选择题。
+3. 不要因为续写块「没有完整题干」而丢弃；不要把续写并进后面的新题。
+4. 若本页页首并非续写而是全新完整题，再正常提取（blocks 第一项为新题即可）。
+
+${EXTRACT_SCHEMA_HINT}`,
+      },
+      image,
+    ],
+    0.15,
+    `extract-page-${pageIndex + 1}-ctx`,
+  );
+  const data = parseJsonLoose(text) as {
+    blocks?: Array<Record<string, unknown>>;
+    hasChoiceQuestions?: boolean;
+  };
+  const rawBlocks = Array.isArray(data.blocks) ? data.blocks : [];
+  if (data.hasChoiceQuestions === false || rawBlocks.length === 0) return [];
+  return rawBlocks
+    .map((b) => mapRawBlock(b, pageIndex))
+    .filter((b): b is ExtractedBlock => b != null);
 }
 
 /** 跨页判断（不含调度） */
@@ -431,11 +585,33 @@ export async function shouldMergeBlocks(
   prev: ExtractedBlock,
   next: ExtractedBlock,
 ): Promise<boolean> {
-  const text = await geminiGenerate([
-    {
-      text: `判断两段内容是否属于同一道被跨页截断的选择题。只输出 JSON：{"merge":true|false,"reason":"..."}\n\n【上一页末块】\n题干: ${prev.stem}\n选项: ${JSON.stringify(prev.options)}\n答案: ${prev.answer.join(",")}\n解析: ${prev.explanation}\ntruncated=${prev.truncated} position=${prev.position}\n\n【下一页首块】\n题干: ${next.stem}\n选项: ${JSON.stringify(next.options)}\n答案: ${next.answer.join(",")}\n解析: ${next.explanation}\ntruncated=${next.truncated} position=${next.position}`,
-    },
-  ]);
+  // 强启发式：明显续写，直接合并，省一次误判
+  if (looksLikeStemContinuation(prev, next)) return true;
+
+  const text = await geminiGenerate(
+    [
+      {
+        text: `判断两段是否为「同一道选择题」被跨页截断后的前后两截。
+规则：
+- 若上一段 position=end / truncated=true，且下一段以 ②③④ 开头或 position=start，倾向 merge=true。
+- 若两段是完全不同的完整题目，merge=false。
+- 若下一段是上一段的选项/题干续写，merge=true。
+只输出 JSON：{"merge":true|false,"reason":"..."}
+
+【上一页末块】
+题干: ${prev.stem}
+选项: ${JSON.stringify(prev.options)}
+truncated=${prev.truncated} position=${prev.position}
+
+【下一页候选块】
+题干: ${next.stem}
+选项: ${JSON.stringify(next.options)}
+truncated=${next.truncated} position=${next.position}`,
+      },
+    ],
+    0.1,
+    `merge-p${prev.pageIndex + 1}-p${next.pageIndex + 1}`,
+  );
   const data = parseJsonLoose(text) as { merge?: boolean };
   return Boolean(data.merge);
 }
@@ -510,13 +686,15 @@ export async function completeAnswerExplanation(
     };
   }
 
-  const text = await geminiGenerate([
-    {
-      text: `你只能补全「答案」和/或「解析」，严禁改写、补充题干或选项文字。
+  const text = await geminiGenerate(
+    [
+      {
+        text: `你只能补全「答案」和/或「解析」，严禁改写、补充题干或选项文字。
 输出 JSON：{"answer":["A"],"explanation":"..."}
 - 若只有一个正确选项，answer 只含一个字母；若有多个正确选项，answer 含多个字母。
 - 系统会根据 answer 个数自动判定单选/多选，你不要输出 type 字段。
-解析中保留换行（\\n）。不要输出题号。
+- 解析可用 \\n 分段，但**行内公式必须写在句子中间的 $...$ 里，不要每个公式单独占一行**。
+不要输出题号。
 ${LATEX_PROMPT_BLOCK}
 
 【题干，只读】
@@ -529,8 +707,11 @@ ${JSON.stringify(options)}
 已有解析（卷面）: ${onPaperExpl ? srcExpl : "(无，必须由你生成解析)"}
 需要你生成: ${needAnswer ? "答案" : ""}${needAnswer && needExpl ? " + " : ""}${needExpl ? "解析" : ""}
 `,
-    },
-  ]);
+      },
+    ],
+    0.2,
+    "complete-answer",
+  );
   const data = parseJsonLoose(text) as {
     answer?: unknown;
     explanation?: string;

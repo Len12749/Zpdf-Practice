@@ -1,92 +1,31 @@
 "use client";
 
-import katex from "katex";
 import { useMemo, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import remarkBreaks from "remark-breaks";
+import rehypeKatex from "rehype-katex";
 import { cn } from "@/lib/cn";
 
-type Segment =
-  | { type: "text"; value: string }
-  | { type: "math"; value: string; display: boolean };
-
-export function parseLatexSegments(input: string): Segment[] {
-  if (!input) return [{ type: "text", value: "" }];
-
-  const segments: Segment[] = [];
-  const re =
-    /\$\$([\s\S]+?)\$\$|\$((?:\\.|[^$\\])+)\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)/g;
-
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(input)) !== null) {
-    if (m.index > last) {
-      segments.push({ type: "text", value: input.slice(last, m.index) });
-    }
-    if (m[1] != null) {
-      segments.push({ type: "math", value: m[1].trim(), display: true });
-    } else if (m[2] != null) {
-      segments.push({ type: "math", value: m[2].trim(), display: false });
-    } else if (m[3] != null) {
-      segments.push({ type: "math", value: m[3].trim(), display: true });
-    } else if (m[4] != null) {
-      segments.push({ type: "math", value: m[4].trim(), display: false });
-    }
-    last = m.index + m[0].length;
-  }
-  if (last < input.length) {
-    segments.push({ type: "text", value: input.slice(last) });
-  }
-  return segments.length ? segments : [{ type: "text", value: input }];
+/**
+ * 轻量预处理：只做换行归一 + 把「公式被单独拆行」收成行内。
+ * 真正的 LaTeX 交给 remark-math + rehype-katex，不要手拆 $...$。
+ */
+function prepare(text: string) {
+  let s = (text ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  s = s.replace(/\n{3,}/g, "\n\n");
+  // 行内公式两侧的多余单换行 → 空格
+  s = s.replace(/([^\n])\n+(\$[^$\n]+\$)/g, "$1 $2");
+  s = s.replace(/(\$[^$\n]+\$)\n+([^\n$])/g, "$1 $2");
+  s = s.replace(/(\$[^$\n]+\$)\n+(\$)/g, "$1 $2");
+  s = s.replace(/\n(\$[^$\n]{1,48}\$)\n/g, " $1 ");
+  return s;
 }
 
-function renderMath(tex: string, display: boolean): string {
-  try {
-    return katex.renderToString(tex, {
-      displayMode: display,
-      throwOnError: false,
-      strict: "ignore",
-      output: "html",
-      trust: false,
-    });
-  } catch {
-    return tex;
-  }
-}
-
-/** 规范化换行，确保 Markdown 能保留单行换行 */
-function normalizeNewlines(text: string) {
-  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-}
-
-const mdComponents = {
-  table: ({ children }: { children?: ReactNode }) => (
-    <div className="my-3 w-full overflow-x-auto rounded-lg border border-border">
-      <table className="w-full min-w-[280px] border-collapse text-sm">
-        {children}
-      </table>
-    </div>
-  ),
-  thead: ({ children }: { children?: ReactNode }) => (
-    <thead className="bg-surface-muted text-left">{children}</thead>
-  ),
-  tbody: ({ children }: { children?: ReactNode }) => (
-    <tbody className="divide-y divide-border">{children}</tbody>
-  ),
-  tr: ({ children }: { children?: ReactNode }) => (
-    <tr className="border-b border-border last:border-b-0">{children}</tr>
-  ),
-  th: ({ children }: { children?: ReactNode }) => (
-    <th className="px-3 py-2 font-semibold text-foreground">{children}</th>
-  ),
-  td: ({ children }: { children?: ReactNode }) => (
-    <td className="px-3 py-2 align-top text-foreground/90">{children}</td>
-  ),
+const components = {
   p: ({ children }: { children?: ReactNode }) => (
-    <p className="my-1.5 whitespace-pre-wrap leading-relaxed last:mb-0 first:mt-0">
-      {children}
-    </p>
+    <p className="my-1.5 leading-relaxed last:mb-0 first:mt-0">{children}</p>
   ),
   br: () => <br />,
   ul: ({ children }: { children?: ReactNode }) => (
@@ -121,10 +60,33 @@ const mdComponents = {
       {children}
     </a>
   ),
+  table: ({ children }: { children?: ReactNode }) => (
+    <div className="my-3 w-full overflow-x-auto rounded-lg border border-border">
+      <table className="w-full min-w-[280px] border-collapse text-sm">
+        {children}
+      </table>
+    </div>
+  ),
+  thead: ({ children }: { children?: ReactNode }) => (
+    <thead className="bg-surface-muted text-left">{children}</thead>
+  ),
+  tbody: ({ children }: { children?: ReactNode }) => (
+    <tbody className="divide-y divide-border">{children}</tbody>
+  ),
+  tr: ({ children }: { children?: ReactNode }) => (
+    <tr className="border-b border-border last:border-b-0">{children}</tr>
+  ),
+  th: ({ children }: { children?: ReactNode }) => (
+    <th className="px-3 py-2 font-semibold text-foreground">{children}</th>
+  ),
+  td: ({ children }: { children?: ReactNode }) => (
+    <td className="px-3 py-2 align-top text-foreground/90">{children}</td>
+  ),
 };
 
 /**
- * 题干 / 选项 / 解析：Markdown（表格 + 换行）+ LaTeX 混排
+ * 题干 / 选项 / 解析：Markdown + LaTeX 一次渲染。
+ * $...$ 行内，$$...$$ 块级。
  */
 export function RichText({
   children,
@@ -133,45 +95,34 @@ export function RichText({
   children: string;
   className?: string;
 }) {
-  const segments = useMemo(
-    () => parseLatexSegments(normalizeNewlines(children ?? "")),
-    [children],
-  );
+  const source = useMemo(() => prepare(children ?? ""), [children]);
 
   return (
-    <div
-      className={cn(
-        "rich-text latex-content break-words whitespace-pre-wrap",
-        className,
-      )}
-    >
-      {segments.map((seg, i) => {
-        if (seg.type === "math") {
-          const html = renderMath(seg.value, seg.display);
-          return (
-            <span
-              key={i}
-              className={cn(
-                "katex-host",
-                seg.display && "my-2 block overflow-x-auto text-center",
-              )}
-              dangerouslySetInnerHTML={{ __html: html }}
-            />
-          );
-        }
-        if (!seg.value) return null;
-        return (
-          <ReactMarkdown
-            key={i}
-            remarkPlugins={[remarkGfm, remarkBreaks]}
-            components={mdComponents as never}
-          >
-            {seg.value}
-          </ReactMarkdown>
-        );
-      })}
+    <div className={cn("rich-text latex-content break-words", className)}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
+        rehypePlugins={[
+          [
+            rehypeKatex,
+            {
+              throwOnError: false,
+              strict: "ignore",
+              output: "htmlAndMathml",
+            },
+          ],
+        ]}
+        components={components as never}
+      >
+        {source}
+      </ReactMarkdown>
     </div>
   );
+}
+
+/** 兼容旧调用：仅做切段，供调试/测试 */
+export function parseLatexSegments(input: string) {
+  if (!input) return [{ type: "text" as const, value: "" }];
+  return [{ type: "text" as const, value: input }];
 }
 
 export { RichText as LatexText };
