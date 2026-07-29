@@ -6,6 +6,7 @@ import {
   BookOpenText,
   Brain,
   CalendarCheck,
+  ChatsCircle,
   FolderOpen,
   Heart,
   ListChecks,
@@ -14,11 +15,12 @@ import {
   X,
   List,
 } from "@phosphor-icons/react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/brand/logo";
 import { CheckInModal } from "@/components/check-in/check-in-card";
+import { ContactModal } from "@/components/contact/contact-modal";
 import { useAuth } from "@/lib/auth-store";
 
 const nav = [
@@ -30,10 +32,59 @@ const nav = [
   { href: "/about", label: "关于", icon: Brain },
 ];
 
+/**
+ * 右上角操作：比导航更醒目一点（浅描边 + 实色底），
+ * tone 用于签到前后对比。
+ */
+function HeaderAction({
+  icon,
+  label,
+  onClick,
+  href,
+  className,
+  tone = "default",
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick?: () => void;
+  href?: string;
+  className?: string;
+  tone?: "default" | "checkin" | "checked";
+}) {
+  const cls = cn(
+    "inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-sm font-medium transition-all",
+    "border shadow-sm active:scale-[0.98]",
+    tone === "checkin" &&
+      "border-accent/35 bg-accent text-white hover:bg-accent-hover dark:text-zinc-950",
+    tone === "checked" &&
+      "border-border bg-surface text-muted hover:bg-surface-muted",
+    tone === "default" &&
+      "border-border bg-surface text-foreground hover:border-accent/30 hover:bg-accent-soft/50 hover:text-accent",
+    className,
+  );
+
+  if (href) {
+    return (
+      <Link href={href} className={cls}>
+        {icon}
+        <span className="hidden sm:inline">{label}</span>
+      </Link>
+    );
+  }
+
+  return (
+    <button type="button" onClick={onClick} className={cls}>
+      {icon}
+      <span className="hidden sm:inline">{label}</span>
+    </button>
+  );
+}
+
 export function SiteHeader() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [checkInOpen, setCheckInOpen] = useState(false);
+  const [contactOpen, setContactOpen] = useState(false);
   const { isLoggedIn, checkedInToday } = useAuth();
 
   return (
@@ -70,55 +121,44 @@ export function SiteHeader() {
         </nav>
 
         <div className="flex items-center gap-2">
+          <HeaderAction
+            icon={<ChatsCircle size={17} />}
+            label="联系我们"
+            onClick={() => setContactOpen(true)}
+          />
+
           {isLoggedIn ? (
             <>
-              <Button
-                variant={checkedInToday ? "secondary" : "outline"}
-                size="sm"
-                icon={<CalendarCheck size={18} weight={checkedInToday ? "fill" : "regular"} />}
+              <HeaderAction
+                icon={
+                  <CalendarCheck
+                    size={17}
+                    weight={checkedInToday ? "fill" : "regular"}
+                  />
+                }
+                label={checkedInToday ? "已签到" : "签到"}
                 onClick={() => setCheckInOpen(true)}
-                className="hidden sm:inline-flex"
-              >
-                {checkedInToday ? "已签到" : "签到"}
-              </Button>
-              <button
-                type="button"
-                onClick={() => setCheckInOpen(true)}
-                className={cn(
-                  "inline-flex h-9 w-9 items-center justify-center rounded-lg border sm:hidden",
-                  checkedInToday
-                    ? "border-border bg-surface-muted text-muted"
-                    : "border-accent/40 text-accent",
-                )}
-                aria-label={checkedInToday ? "查看签到" : "签到"}
-              >
-                <CalendarCheck
-                  size={18}
-                  weight={checkedInToday ? "fill" : "regular"}
-                />
-              </button>
-              <Link href="/profile" className="hidden sm:block">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  icon={<UserCircle size={18} />}
-                >
-                  个人中心
-                </Button>
-              </Link>
+                tone={checkedInToday ? "checked" : "checkin"}
+              />
+              <HeaderAction
+                icon={<UserCircle size={17} />}
+                label="个人中心"
+                href="/profile"
+              />
             </>
           ) : (
             <Link href="/login" className="hidden sm:block">
               <Button size="sm">登录</Button>
             </Link>
           )}
+
           <button
             type="button"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-border lg:hidden"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-surface text-foreground shadow-sm transition-colors hover:bg-surface-muted lg:hidden"
             onClick={() => setOpen((v) => !v)}
             aria-label={open ? "关闭菜单" : "打开菜单"}
           >
-            {open ? <X size={20} /> : <List size={20} />}
+            {open ? <X size={18} /> : <List size={18} />}
           </button>
         </div>
       </div>
@@ -146,6 +186,17 @@ export function SiteHeader() {
                 </Link>
               );
             })}
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                setContactOpen(true);
+              }}
+              className="flex items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm font-medium hover:bg-surface-muted"
+            >
+              <ChatsCircle size={18} />
+              联系我们
+            </button>
             {isLoggedIn ? (
               <>
                 <button
@@ -182,6 +233,7 @@ export function SiteHeader() {
       )}
 
       <CheckInModal open={checkInOpen} onClose={() => setCheckInOpen(false)} />
+      <ContactModal open={contactOpen} onClose={() => setContactOpen(false)} />
     </header>
   );
 }

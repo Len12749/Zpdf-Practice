@@ -209,9 +209,21 @@ export async function runExtractJob(
 
     throwIfCancelled(libraryId);
     await db.delete(questions).where(eq(questions.libraryId, libraryId));
-    if (rows.length) {
-      await db.insert(questions).values(rows);
+
+    if (!rows.length) {
+      // 全程未识别到选择题：明确失败原因，避免「空题库却显示成功」
+      await setProgress(libraryId, {
+        status: "failed",
+        questionCount: 0,
+        importCompleted: total,
+        importPhaseLabel: "未找到选择题",
+        importError:
+          "未从上传页面中识别到选择题（仅支持带 A/B/C… 选项的单选/多选）。请确认卷面含选择题后重试，或改用 CSV 导入。",
+      });
+      return;
     }
+
+    await db.insert(questions).values(rows);
 
     await setProgress(libraryId, {
       status: "ready",

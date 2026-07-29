@@ -47,7 +47,7 @@ export default function ProfilePage() {
         <div className="rounded-[var(--radius)] border border-border bg-surface p-5">
           <div className="flex items-center gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-soft text-accent">
-              <User size={24} weight="duotone" />
+              <User size={24} />
             </div>
             <div>
               <p className="font-semibold">{user.account}</p>

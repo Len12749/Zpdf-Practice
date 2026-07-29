@@ -53,6 +53,9 @@ export function QuestionCard({
   const [selected, setSelected] = useState<string[]>([]);
   const [favorited, setFavorited] = useState(!!question.favorited);
   const [revealed, setRevealed] = useState(showAnswer || mode === "memorize");
+  const [localWrongCount, setLocalWrongCount] = useState(
+    question.wrongCount ?? 0,
+  );
   const { toast, confirm } = useFeedback();
   const [editing, setEditing] = useState(false);
   const [stem, setStem] = useState(question.stem);
@@ -69,6 +72,12 @@ export function QuestionCard({
   // 唯一标准：答案个数（含 AI 补全）
   const qType = inferQuestionType(answerKeys);
 
+  const isCorrectKey = (key: string) => answerKeys.includes(normalizeKey(key));
+
+  /** 题库管理 / 背题 / 刷题已提交：高亮正确答案为绿色 */
+  const showAnswerHighlight =
+    mode === "manage" || mode === "memorize" || (mode === "practice" && revealed);
+
   const toggleOption = (key: string) => {
     if (mode !== "practice" || revealed) return;
     if (qType === "single") setSelected([key]);
@@ -78,18 +87,17 @@ export function QuestionCard({
       );
   };
 
-  const isCorrectKey = (key: string) => answerKeys.includes(normalizeKey(key));
-
-  /** 题库管理 / 背题 / 刷题已提交：高亮正确答案为绿色 */
-  const showAnswerHighlight =
-    mode === "manage" || mode === "memorize" || (mode === "practice" && revealed);
-
+  /** 点「提交本题」后判题；答错立刻写入错题本（不必刷完整库） */
   const submitPractice = () => {
+    if (mode !== "practice" || revealed || !selected.length) return;
     setRevealed(true);
+
     const selectedNorm = selected.map(normalizeKey);
     const correct =
       selectedNorm.length === answerKeys.length &&
-      selectedNorm.every((k) => answerKeys.includes(k));
+      selectedNorm.every((k) => answerKeys.includes(k)) &&
+      answerKeys.every((k) => selectedNorm.includes(k));
+
     if (!correct && libraryId) {
       void api("/api/wrong", {
         method: "POST",
@@ -97,7 +105,15 @@ export function QuestionCard({
           questionId: question.id,
           libraryId,
         }),
-      }).then(() => onWrong?.());
+      })
+        .then(() => {
+          setLocalWrongCount((c) => c + 1);
+          toast("已记入错题本", "warning");
+          onWrong?.();
+        })
+        .catch(() => {
+          toast("错题记录失败，请检查网络", "error");
+        });
     }
   };
 
@@ -172,8 +188,8 @@ export function QuestionCard({
               )}
             </>
           )}
-          {(question.wrongCount ?? 0) > 0 && mode !== "manage" && (
-            <Badge tone="danger">错 {question.wrongCount} 次</Badge>
+          {localWrongCount > 0 && mode !== "manage" && (
+            <Badge tone="danger">错 {localWrongCount} 次</Badge>
           )}
         </div>
         <div className="flex items-center gap-1">

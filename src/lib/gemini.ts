@@ -191,20 +191,107 @@ export async function geminiGenerate(parts: GeminiPart[], temperature = 0.2) {
   return data.choices?.[0]?.message?.content?.trim() ?? "";
 }
 
+/**
+ * 修复模型 JSON 里常见的非法转义（尤其是 LaTeX：\frac \( \) \alpha 等）。
+ * 合法 JSON 转义仅：\" \\ \/ \b \f \n \r \t \uXXXX
+ */
+function repairInvalidJsonEscapes(s: string): string {
+  return s.replace(/\\(.)/g, (full, ch: string, offset: number, src: string) => {
+    // 已是合法单字符转义
+    if ('"\\/bfnrt'.includes(ch)) return full;
+    // \uXXXX
+    if (ch === "u") {
+      const hex = src.slice(offset + 2, offset + 6);
+      if (/^[0-9a-fA-F]{4}$/.test(hex)) return full;
+      return "\\\\u";
+    }
+    // 非法：变成 \\ + 原字符，例如 \( → \\(
+    return "\\\\" + ch;
+  });
+}
+
+function stripCodeFences(s: string): string {
+  return s
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+function extractJsonCandidate(s: string): string {
+  const trimmed = stripCodeFences(s.trim());
+  const m = trimmed.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+  return m ? m[0] : trimmed;
+}
+
+function snippetAround(s: string, pos: number, radius = 40): string {
+  const start = Math.max(0, pos - radius);
+  const end = Math.min(s.length, pos + radius);
+  const piece = s.slice(start, end).replace(/\s+/g, " ");
+  return `${start > 0 ? "…" : ""}${piece}${end < s.length ? "…" : ""}`;
+}
+
+/**
+ * 宽松解析模型返回的 JSON：去代码块、抽 {...}、修非法 \ 转义。
+ * 失败时带上出错片段，便于排查。
+ */
 function parseJsonLoose(text: string) {
-  const trimmed = text.trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    const m = trimmed.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-    if (m) return JSON.parse(m[0]);
-    throw new Error("模型返回非 JSON");
+  const candidates: string[] = [];
+  const raw = text.trim();
+  candidates.push(raw);
+  candidates.push(stripCodeFences(raw));
+  candidates.push(extractJsonCandidate(raw));
+
+  const tried = new Set<string>();
+  let lastErr: unknown;
+
+  for (const c of candidates) {
+    if (!c || tried.has(c)) continue;
+    tried.add(c);
+
+    for (const variant of [c, repairInvalidJsonEscapes(c)]) {
+      if (tried.has(`v:${variant}`) && variant !== c) continue;
+      tried.add(`v:${variant}`);
+      try {
+        return JSON.parse(variant);
+      } catch (e) {
+        lastErr = e;
+      }
+    }
   }
+
+  const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  // 尝试从 "position N" 抽出位置，展示上下文
+  const posMatch = msg.match(/position\s+(\d+)/i);
+  const pos = posMatch ? Number(posMatch[1]) : -1;
+  const body = extractJsonCandidate(raw);
+  const around =
+    pos >= 0 && pos < body.length
+      ? ` 出错附近：${snippetAround(body, pos)}`
+      : ` 原文摘要：${body.slice(0, 120).replace(/\s+/g, " ")}${body.length > 120 ? "…" : ""}`;
+
+  throw new Error(
+    `模型返回的 JSON 无法解析（${msg}）。${around} 多为题干里的反斜杠/LaTeX 转义问题，已尝试自动修复仍失败。`,
+  );
 }
 
 const EXTRACT_SCHEMA_HINT = `
 你是试卷 OCR/结构化提取器，只能抄录卷面可见内容，禁止编造。
 
+## 题型范围（必须遵守）
+- **只提取选择题**（单选、多选均可）：题干 + 至少 2 个选项（A/B/C/D/E…）。
+- **不要提取**填空题、解答题、证明题、计算大题、作文、纯文字材料、判断题（若无可选项）等非选择题。
+- 同一页既有选择题又有其他题型：只输出选择题，忽略其余。
+
+## 本页没有选择题时（重要）
+不要编造题目，不要把填空/解答硬改成选择题。请返回：
+{
+  "blocks": [],
+  "hasChoiceQuestions": false,
+  "skipReason": "本页无选择题"
+}
+skipReason 用简短中文说明即可，例如「本页为填空/解答」「本页仅封面/说明」「本页无 A/B/C 选项」。
+
+## 有选择题时
 输出 JSON：
 {
   "blocks": [
@@ -218,21 +305,24 @@ const EXTRACT_SCHEMA_HINT = `
       "truncated": false,
       "position": "full|start|end|middle"
     }
-  ]
+  ],
+  "hasChoiceQuestions": true,
+  "skipReason": ""
 }
 
 硬性规则：
 1. **禁止私自补充题干或选项**：看不清、被裁切、缺失的字不要猜补；宁可 truncated=true，也不要脑补完整句子。
 2. **题干不要输出序号**：不要写「1.」「2、」「（3）」「第4题」等题号，只保留题目正文。
-3. 选项字母统一为 A/B/C/D/E...（忽略①Ⅰ等符号，映射到 ABC）。
+3. 选项字母统一为 A/B/C/D/E...（忽略①Ⅰ等符号，映射到 ABC）；每题 options 至少 2 项。
 4. **答案/解析仅当卷面明确印出时才填写**：
    - 卷面有明确答案（如「答案：C」或答题卡标注）→ answer 填字母，answerOnPaper=true
    - 否则 answer 必须 []，answerOnPaper=false（禁止根据题意猜答案）
    - 卷面有解析文字 → explanation 抄录，explanationOnPaper=true
    - 否则 explanation 必须 ""，explanationOnPaper=false（禁止写解析）
-5. 题干或选项严重缺失的块不要输出。
+5. 题干或选项严重缺失的块不要输出；非选择题不要输出。
 6. 跨页截断：truncated=true，position 用 start/middle/end，仍只抄可见部分。
 7. **换行**：保持原文换行，JSON 字符串内用 \\n，禁止压成一行。
+8. **JSON 转义（极易出错）**：字符串里反斜杠必须加倍。例如 LaTeX 的 \\frac 在 JSON 中写成 \\\\frac；优先用 $...$ 写公式；禁止输出 Markdown 代码块。
 ${LATEX_PROMPT_BLOCK}
 `.trim();
 
@@ -269,14 +359,24 @@ export async function extractBlocksFromPage(
 ): Promise<ExtractedBlock[]> {
   const image = await fileToInlinePart(imagePath);
   const text = await geminiGenerate([
-    { text: `这是试卷第 ${pageIndex + 1} 页。\n${EXTRACT_SCHEMA_HINT}` },
+    {
+      text: `这是试卷第 ${pageIndex + 1} 页。请只提取本页选择题；若无选择题，按约定返回空 blocks。\n${EXTRACT_SCHEMA_HINT}`,
+    },
     image,
   ]);
   const data = parseJsonLoose(text) as {
     blocks?: Array<Record<string, unknown>>;
+    hasChoiceQuestions?: boolean;
+    skipReason?: string;
   };
-  const blocks = Array.isArray(data.blocks) ? data.blocks : [];
-  return blocks
+
+  // 模型声明本页无选择题，或 blocks 为空 → 正常空结果（非错误）
+  const rawBlocks = Array.isArray(data.blocks) ? data.blocks : [];
+  if (data.hasChoiceQuestions === false || rawBlocks.length === 0) {
+    return [];
+  }
+
+  return rawBlocks
     .map((b) => {
       const stem = stripStemNumber(String(b.stem ?? ""));
       const options = Array.isArray(b.options)
@@ -322,6 +422,7 @@ export async function extractBlocksFromPage(
           : "full") as ExtractedBlock["position"],
       };
     })
+    // 再次兜底：非选择 / 选项不足 2 个不入库
     .filter((b) => b.stem && b.options.length >= 2);
 }
 

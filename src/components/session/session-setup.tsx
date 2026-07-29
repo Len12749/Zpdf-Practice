@@ -93,7 +93,7 @@ export function SessionSetup({
       <div className="mx-auto max-w-2xl px-4 py-16 md:px-6">
         <div className="rounded-[var(--radius)] border border-dashed border-border bg-surface p-10 text-center">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-surface-muted text-muted">
-            <Books size={26} weight="duotone" />
+            <Books size={26} />
           </div>
           <h1 className="mt-4 text-2xl font-semibold tracking-tight">{title}</h1>
           <p className="mt-3 text-sm leading-relaxed text-muted">
@@ -146,7 +146,7 @@ export function SessionSetup({
               )}
             >
               <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent">
-                <Books size={18} weight="duotone" />
+                <Books size={18} />
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium">

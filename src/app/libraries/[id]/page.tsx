@@ -178,14 +178,19 @@ export default function LibraryDetailPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Link href={`/practice?libraryId=${lib.id}`}>
-            <Button size="sm" icon={<ListChecks size={16} />}>
-              刷题
+          <Link href={`/memorize?libraryId=${lib.id}`}>
+            <Button size="sm" icon={<BookOpenText size={16} />}>
+              背题
             </Button>
           </Link>
-          <Link href={`/memorize?libraryId=${lib.id}`}>
-            <Button size="sm" variant="outline" icon={<BookOpenText size={16} />}>
-              背题
+          <Link href={`/practice?libraryId=${lib.id}`}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="!border-sky-600/30 !bg-sky-50 !text-sky-800 !shadow-none hover:!bg-sky-100 dark:!border-sky-400/35 dark:!bg-sky-950/55 dark:!text-sky-200 dark:hover:!bg-sky-900/65"
+              icon={<ListChecks size={16} />}
+            >
+              刷题
             </Button>
           </Link>
           <Button
